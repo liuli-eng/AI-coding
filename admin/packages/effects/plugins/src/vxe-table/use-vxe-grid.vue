@@ -41,7 +41,9 @@ import {
 import { VbenHelpTooltip, VbenLoading } from '@vben-core/shadcn-ui';
 
 import { VxeButton } from 'vxe-pc-ui';
-import { VxeGrid, VxeUI } from 'vxe-table';
+import { VxeGrid } from 'vxe-table';
+// 表格核心的按需入口仅提供默认导出，同时初始化表格全局配置。
+import VxeUI from 'vxe-table/es/vxe-ui';
 
 import { extendProxyOptions } from './extends';
 import { useTableForm } from './init';
@@ -97,8 +99,8 @@ const isSeparator = computed(() => {
 });
 const separatorBg = computed(() => {
   return !separator.value ||
-  isBoolean(separator.value) ||
-  !separator.value.backgroundColor
+    isBoolean(separator.value) ||
+    !separator.value.backgroundColor
     ? undefined
     : separator.value.backgroundColor;
 });

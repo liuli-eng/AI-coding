@@ -11,6 +11,7 @@ release/
 
 # local secrets and runtime files
 .env
+!/admin/apps/web-antd/.env
 .env.local
 .env.*.local
 ai-service/.env
