@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <parent>
+        <groupId>org.ruoyi</groupId>
+        <artifactId>aicoding-common</artifactId>
+        <version>${revision}</version>
+    </parent>
+    <modelVersion>4.0.0</modelVersion>
+
+    <artifactId>aicoding-common-trace</artifactId>
+
+    <description>
+        aicoding-common-trace 通用链路追踪
+    </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.ruoyi</groupId>
+            <artifactId>aicoding-common-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.ruoyi</groupId>
+            <artifactId>aicoding-common-mybatis</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.ruoyi</groupId>
+            <artifactId>aicoding-common-json</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

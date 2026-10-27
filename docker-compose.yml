@@ -1,0 +1,25 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: aicoding
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports: ["5432:5432"]
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+  ai-service:
+    build: ./ai-service
+    env_file: ./ai-service/.env.example
+    ports: ["8001:8001"]
+    depends_on: [postgres, redis]
+  ai-worker:
+    build: ./ai-service
+    command: celery -A app.tasks.celery_app worker --loglevel=INFO
+    env_file: ./ai-service/.env.example
+    depends_on: [redis, postgres]
+volumes:
+  postgres-data:
+

@@ -1,0 +1,19 @@
+{
+  "name": "ai-coding-assistant-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI 编程助手桌面客户端",
+  "main": "src/main.js",
+  "scripts": {"dev": "electron .", "dist": "electron-builder"},
+  "devDependencies": {"electron": "^34.0.0", "electron-builder": "^25.1.8"},
+  "build": {
+    "appId": "com.aicoding.assistant",
+    "productName": "AI 编程助手",
+    "directories": {"output": "release"},
+    "files": ["src/**/*"],
+    "mac": {"category": "public.app-category.developer-tools", "target": ["dmg", "zip"]},
+    "win": {"target": ["nsis", "zip"], "icon": "assets/icon.ico"},
+    "publish": [{"provider": "generic", "url": "https://download.example.com/ai-coding-assistant/"}]
+  }
+}
+

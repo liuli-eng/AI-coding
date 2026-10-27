@@ -1,0 +1,30 @@
+# dependencies and build outputs
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+target/
+**/target/
+release/
+*.log
+.DS_Store
+
+# local secrets and runtime files
+.env
+.env.local
+.env.*.local
+ai-service/.env
+*.pem
+*.key
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# caches
+.cache/
+.pnpm-store/
+__pycache__/
+*.py[cod]
+.pytest_cache/

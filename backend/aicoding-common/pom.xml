@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <parent>
+        <artifactId>aicoding-assistant</artifactId>
+        <groupId>org.ruoyi</groupId>
+        <version>${revision}</version>
+    </parent>
+    <modelVersion>4.0.0</modelVersion>
+
+    <modules>
+        <module>aicoding-common-bom</module>
+        <module>aicoding-common-chat</module>
+        <module>aicoding-common-social</module>
+        <module>aicoding-common-core</module>
+        <module>aicoding-common-doc</module>
+        <module>aicoding-common-excel</module>
+        <module>aicoding-common-idempotent</module>
+        <module>aicoding-common-job</module>
+        <module>aicoding-common-log</module>
+        <module>aicoding-common-mail</module>
+        <module>aicoding-common-mybatis</module>
+        <module>aicoding-common-oss</module>
+        <module>aicoding-common-ratelimiter</module>
+        <module>aicoding-common-redis</module>
+        <module>aicoding-common-satoken</module>
+        <module>aicoding-common-security</module>
+        <module>aicoding-common-sms</module>
+        <module>aicoding-common-web</module>
+        <module>aicoding-common-translation</module>
+        <module>aicoding-common-sensitive</module>
+        <module>aicoding-common-json</module>
+        <module>aicoding-common-encrypt</module>
+        <module>aicoding-common-tenant</module>
+        <module>aicoding-common-websocket</module>
+        <module>aicoding-common-sse</module>
+        <module>aicoding-common-trace</module>
+    </modules>
+
+    <artifactId>aicoding-common</artifactId>
+    <packaging>pom</packaging>
+
+    <description>
+        common 通用模块
+    </description>
+
+</project>

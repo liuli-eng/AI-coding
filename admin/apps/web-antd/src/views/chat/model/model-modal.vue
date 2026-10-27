@@ -1,0 +1,477 @@
+<!--
+使用 Ant Design Vue 原生 Form 组件生成表单
+详细用法参考: https://antdv.com/components/form-cn
+注意: 如果 VSCode 配置了自动移除未使用的导入，可能会误删某些组件导入
+-->
+<script setup lang="ts">
+import type { RuleObject } from 'ant-design-vue/es/form';
+
+import type { ModelForm } from '#/api/chat/model/model';
+import type { ProviderVO } from '#/api/chat/provider/model';
+
+import { computed, nextTick, ref, shallowRef, watch } from 'vue';
+
+import { useVbenModal } from '@vben/common-ui';
+import { DictEnum } from '@vben/constants';
+import { $t } from '@vben/locales';
+import { cloneDeep } from '@vben/utils';
+
+import {
+  Col,
+  Form,
+  FormItem,
+  Input,
+  InputPassword,
+  Row,
+  Select,
+  Tag,
+  Textarea,
+} from 'ant-design-vue';
+import { pick } from 'lodash-es';
+
+import { modelAdd, modelInfo, modelUpdate } from '#/api/chat/model';
+import { providerList } from '#/api/chat/provider';
+import { getDictOptions } from '#/utils/dict';
+import { getCustomProviderConfig } from '../provider/options';
+
+const emit = defineEmits<{ reload: [] }>();
+
+const isUpdate = ref(false);
+const apiKeyVisible = shallowRef(false);
+// 编辑加载数据时的标志，用于跳过watch避免apiHost被误清空
+const isLoading = ref(false);
+const providers = ref<ProviderVO[]>([]);
+const providerOptions = computed(() =>
+  providers.value.map((item) => ({
+    label: String(item.providerName),
+    value: item.providerCode,
+  })),
+);
+const providersMap = computed(() =>
+  new Map(providers.value.map((item) => [item.providerCode, item])),
+);
+const categoryOptions = computed(() => {
+  const options = [...getDictOptions(DictEnum.CHAT_MODEL_CATEGORY)] as any[];
+  ensureCategoryOption(options, 'image', '图片', 'orange');
+  ensureCategoryOption(options, 'audio', '语音', 'purple');
+  ensureCategoryOption(options, 'video', '视频', 'red');
+  ensureCategoryOption(options, 'rerank', '重排序', 'magenta');
+  // 注入 rerank（如果字典没有）
+  if (!options.some((opt) => opt.value === 'rerank')) {
+    options.push({ label: '重排模型', value: 'rerank', cssClass: 'magenta' });
+  }
+
+  // 联动逻辑：仅支持重排的厂商显示重排选项
+  const supportedRerankProviders = ['alibailian', 'qianwen', 'siliconflow'];
+  const currentProvider = String(formData.value.providerCode || '').toLowerCase();
+  if (currentProvider && !supportedRerankProviders.includes(currentProvider)) {
+    return options.filter((opt) => opt.value !== 'rerank');
+  }
+
+  return options;
+});
+
+function ensureCategoryOption(
+  options: any[],
+  value: string,
+  label: string,
+  cssClass: string,
+) {
+  if (!options.some((opt) => opt.value === value)) {
+    options.push({ label, value, cssClass });
+  }
+}
+
+const title = computed(() => {
+  return isUpdate.value ? $t('pages.common.edit') : $t('pages.common.add');
+});
+
+async function loadProviders() {
+  providers.value = [];
+  const res = await providerList({ pageNum: 1, pageSize: 999, status: '0' });
+  providers.value = res.rows.filter((item) => item.status === '0');
+}
+
+/**
+ * 定义默认值 用于reset
+ */
+const defaultValues: Partial<ModelForm> = {
+  id: undefined,
+  category: undefined,
+  modelName: undefined,
+  providerCode: undefined,
+  modelDescribe: undefined,
+  modelShow: undefined,
+  modelDimension: undefined,
+  apiHost: undefined,
+  apiKey: undefined,
+  remark: undefined,
+};
+
+/**
+ * 表单数据ref
+ */
+const formData = ref(cloneDeep(defaultValues));
+const customProviderConfig = computed(() => getCustomProviderConfig(formData.value.providerCode));
+const providerUnavailable = computed(
+  () => !!formData.value.providerCode && !providersMap.value.has(formData.value.providerCode),
+);
+
+const showApiHost = computed(() => {
+  const category = formData.value.category;
+  return (
+    customProviderConfig.value !== null ||
+    category === 'audio' ||
+    category === 'image' ||
+    category === 'video'
+  );
+});
+
+/**
+ * 监听供应商变化
+ */
+watch(
+  () => formData.value.providerCode,
+  (newProviderCode) => {
+    // 编辑加载数据时跳过，避免apiHost被误清空
+    if (isLoading.value) return;
+
+    if (getCustomProviderConfig(newProviderCode)) {
+      formData.value.apiHost = undefined;
+    } else {
+      if (newProviderCode && providersMap.value.has(newProviderCode)) {
+        const provider = providersMap.value.get(newProviderCode);
+        formData.value.apiHost = provider?.apiHost;
+      }
+    }
+
+    // 自动校验重排分类：如果切换到的厂商不支持重排，且当前选中了重排，则强行清空分类
+    if (newProviderCode) {
+      const supportedRerankProviders = ['alibailian', 'qianwen', 'siliconflow'];
+      if (
+        !supportedRerankProviders.includes(String(newProviderCode).toLowerCase()) &&
+        formData.value.category === 'rerank'
+      ) {
+        formData.value.category = undefined;
+      }
+    }
+  },
+);
+
+type AntdFormRules<T> = Partial<Record<keyof T, RuleObject[]>> & {
+  [key: string]: RuleObject[];
+};
+/**
+ * 表单校验规则
+ */
+const formRules = ref<AntdFormRules<ModelForm>>({
+  apiHost: [
+    {
+      validator: async (_rule, value) => {
+        if (customProviderConfig.value && !String(value ?? '').trim()) {
+          throw new Error('请填写自定义厂商的请求地址');
+        }
+      },
+      trigger: 'blur',
+    },
+  ],
+  providerCode: [
+    { required: true, message: $t('ui.formRules.required'), trigger: 'change' },
+    {
+      validator: async (_rule, value) => {
+        if (value && !providersMap.value.has(value)) {
+          throw new Error('请选择已启用的厂商');
+        }
+      },
+      trigger: 'change',
+    },
+  ],
+  category: [
+    { required: true, message: $t('ui.formRules.required'), trigger: 'change' },
+  ],
+  modelName: [
+    { required: true, message: $t('ui.formRules.required'), trigger: 'blur' },
+  ],
+});
+
+/**
+ * useForm解构出表单方法
+ */
+const { validate, validateInfos, resetFields } = Form.useForm(
+  formData,
+  formRules,
+);
+
+const [BasicModal, modalApi] = useVbenModal({
+  class: 'w-[800px]',
+  fullscreenButton: false,
+  closeOnClickModal: false,
+  onClosed: handleCancel,
+  onConfirm: handleConfirm,
+  onOpenChange: async (isOpen) => {
+    if (!isOpen) {
+      return null;
+    }
+    modalApi.modalLoading(true);
+    isLoading.value = true;
+    apiKeyVisible.value = false;
+    try {
+      await loadProviders();
+      const { id } = modalApi.getData() as { id?: number | string };
+      isUpdate.value = !!id;
+      if (isUpdate.value && id) {
+        const record = await modelInfo(id);
+        // 只赋值存在的字段，保留已有模型的地址。
+        formData.value = pick(record, Object.keys(defaultValues));
+      }
+      await nextTick();
+    } catch (error) {
+      console.error('Failed to load model form:', error);
+    } finally {
+      isLoading.value = false;
+      modalApi.modalLoading(false);
+    }
+  },
+});
+
+async function handleConfirm() {
+  try {
+    modalApi.modalLoading(true);
+    await validate();
+    // 可能会做数据处理 使用cloneDeep深拷贝
+    const data = cloneDeep(formData.value);
+    await (isUpdate.value ? modelUpdate(data) : modelAdd(data));
+    emit('reload');
+    await handleCancel();
+  } catch (error) {
+    console.error(error);
+  } finally {
+    modalApi.modalLoading(false);
+  }
+}
+
+async function handleCancel() {
+  modalApi.close();
+  formData.value = cloneDeep(defaultValues);
+  resetFields();
+}
+
+/**
+ * 获取分类颜色
+ * @param category 分类值或颜色值
+ * @param option 完整的选项对象，包含cssClass等信息
+ */
+function getCategoryColor(category: string, option?: any): string {
+  // 优先使用option中的cssClass字段（可能包含自定义颜色）
+  if (option?.cssClass) {
+    const cssClass = option.cssClass.trim();
+    // 如果是十六进制颜色或其他有效的CSS颜色值
+    if (cssClass.startsWith('#') || isValidCSSColor(cssClass)) {
+      return cssClass;
+    }
+  }
+
+  // 其次查看category是否是有效的颜色值
+  if (category.startsWith('#') || isValidCSSColor(category)) {
+    return category;
+  }
+
+  // 最后使用预定义的颜色映射
+  const colorMap: Record<string, string> = {
+    chat: 'blue',
+    embedding: 'green',
+    image: 'orange',
+    audio: 'purple',
+    video: 'red',
+    code: 'cyan',
+    rerank: 'magenta',
+  };
+  return colorMap[category] || 'default';
+}
+
+/**
+ * 判断是否为有效的CSS颜色值
+ */
+function isValidCSSColor(color: string): boolean {
+  // 预定义的Ant Design颜色
+  const antColors = [
+    'red',
+    'orange',
+    'gold',
+    'yellow',
+    'lime',
+    'green',
+    'cyan',
+    'blue',
+    'geekblue',
+    'purple',
+    'magenta',
+    'volcano',
+    'default',
+  ];
+  if (antColors.includes(color)) {
+    return true;
+  }
+
+  // 简单检查是否为有效的十六进制颜色或rgb颜色
+  const hexRegex = /^#([A-F0-9]{6}|[A-F0-9]{3}|[A-F0-9]{8})$/i;
+  const rgbRegex = /^rgba?\(/;
+
+  return hexRegex.test(color) || rgbRegex.test(color);
+}
+</script>
+
+<template>
+  <BasicModal :title="title" class="w-[700px]">
+    <Form :label-col="{ span: 24 }" :wrapper-col="{ span: 24 }">
+      <Row :gutter="16">
+        <Col :span="12">
+          <FormItem
+            label="供应商"
+            v-bind="validateInfos.providerCode"
+            :extra="providerUnavailable ? '当前厂商已停用或不存在，请先启用该厂商，或选择其他已启用的厂商。' : customProviderConfig ? `接口协议：${customProviderConfig.protocol}` : undefined"
+          >
+            <Select
+              v-model:value="formData.providerCode"
+              :placeholder="$t('ui.formRules.required')"
+              :options="providerOptions"
+            />
+          </FormItem>
+        </Col>
+        <Col :span="12">
+          <FormItem label="模型分类" v-bind="validateInfos.category">
+            <Select
+              v-model:value="formData.category"
+              :placeholder="$t('ui.formRules.required')"
+              :options="categoryOptions"
+              show-search
+              option-filter-prop="label"
+            >
+              <template #option="{ label, value, cssClass }">
+                <div class="flex items-center justify-between">
+                  <span>{{ label }}</span>
+                  <Tag
+                    :color="getCategoryColor(value, { cssClass })"
+                    class="ml-2"
+                  >
+                    {{ value }}
+                  </Tag>
+                </div>
+              </template>
+              <template #tagRender="{ label, option }">
+                <Tag :color="getCategoryColor(option.value, option)">
+                  {{ label }}
+                </Tag>
+              </template>
+            </Select>
+          </FormItem>
+        </Col>
+      </Row>
+
+      <Row :gutter="16">
+        <Col :span="12">
+          <FormItem label="模型名称" v-bind="validateInfos.modelName">
+            <Input
+              v-model:value="formData.modelName"
+              :placeholder="$t('ui.formRules.required')"
+            />
+          </FormItem>
+        </Col>
+        <Col :span="12">
+          <FormItem label="模型描述" v-bind="validateInfos.modelDescribe">
+            <Input
+              v-model:value="formData.modelDescribe"
+              :placeholder="$t('ui.formRules.required')"
+            />
+          </FormItem>
+        </Col>
+      </Row>
+
+      <Row :gutter="16">
+        <Col v-if="formData.category === 'vector'" :span="12">
+          <FormItem label="模型维度" v-bind="validateInfos.modelDimension">
+            <Input
+              v-model:value="formData.modelDimension"
+              :placeholder="$t('ui.formRules.required')"
+            />
+          </FormItem>
+        </Col>
+        <Col v-if="showApiHost" :span="12">
+          <FormItem
+            label="请求地址"
+            v-bind="validateInfos.apiHost"
+            :extra="customProviderConfig ? '填写服务商提供的 HTTP 或 HTTPS API Base URL，例如 https://服务商地址/v1。' : undefined"
+          >
+            <Input
+              v-model:value="formData.apiHost"
+              :placeholder="customProviderConfig?.apiHostPlaceholder ?? $t('ui.formRules.required')"
+            />
+          </FormItem>
+        </Col>
+      </Row>
+
+      <Row :gutter="16">
+        <Col :span="24">
+          <FormItem
+            label="密钥"
+            v-bind="validateInfos.apiKey"
+          >
+            <InputPassword
+              v-model:visible="apiKeyVisible"
+              v-model:value="formData.apiKey"
+              placeholder="请输入 API Key"
+              autocomplete="new-password"
+            />
+          </FormItem>
+        </Col>
+      </Row>
+
+      <FormItem label="备注" v-bind="validateInfos.remark">
+        <Textarea
+          v-model:value="formData.remark"
+          :placeholder="$t('ui.formRules.required')"
+          :rows="4"
+        />
+      </FormItem>
+    </Form>
+  </BasicModal>
+</template>
+
+<style scoped>
+:deep(.ant-form-item) {
+  padding: 0 8px;
+  margin-bottom: 20px;
+}
+
+:deep(.ant-form-item-label) {
+  padding-bottom: 8px;
+  text-align: left !important;
+}
+
+:deep(.ant-form-item-label > label) {
+  justify-content: flex-start !important;
+  font-weight: 500;
+  color: rgb(0 0 0 / 85%);
+  text-align: left !important;
+}
+
+:deep(.ant-form-item-control) {
+  text-align: left !important;
+}
+
+:deep(.ant-form-item-control-input) {
+  text-align: left !important;
+}
+
+:deep(.ant-input),
+:deep(.ant-select),
+:deep(.ant-picker),
+:deep(.ant-textarea) {
+  text-align: left !important;
+}
+
+:deep(.ant-input::placeholder),
+:deep(.ant-textarea::placeholder) {
+  color: rgb(0 0 0 / 45%);
+}
+</style>
