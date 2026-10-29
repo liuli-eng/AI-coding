@@ -1,15 +1,52 @@
 <script lang="ts" setup>
-import { computed } from 'vue';
+import { computed, onBeforeUnmount, watch } from 'vue';
 
 import { useAntdDesignTokens } from '@vben/hooks';
-import { preferences, usePreferences } from '@vben/preferences';
+import {
+  preferences,
+  updatePreferences,
+  usePreferences,
+} from '@vben/preferences';
+import { useAccessStore } from '@vben/stores';
 
 import { App, ConfigProvider, theme } from 'ant-design-vue';
 
+import { getSystemName } from '#/api/knowledge/settings';
 import { antdLocale } from '#/locales';
 
 defineOptions({ name: 'App' });
 
+const access = useAccessStore();
+let nameRequest: AbortController | undefined;
+async function refreshSystemName() {
+  nameRequest?.abort();
+  if (!access.accessToken) return;
+  const controller = new AbortController();
+  nameRequest = controller;
+  try {
+    const value = await getSystemName(controller.signal);
+    if (!controller.signal.aborted && value.systemName)
+      updatePreferences({ app: { name: value.systemName } });
+  } catch {
+    /* Keep title on temporary failures. */
+  }
+}
+watch(
+  () => access.accessToken,
+  () => {
+    nameRequest?.abort();
+    updatePreferences({ app: { name: import.meta.env.VITE_APP_TITLE } });
+    refreshSystemName();
+  },
+  { immediate: true },
+);
+window.addEventListener('focus', refreshSystemName);
+window.addEventListener('knowledge-settings-saved', refreshSystemName);
+onBeforeUnmount(() => {
+  nameRequest?.abort();
+  window.removeEventListener('focus', refreshSystemName);
+  window.removeEventListener('knowledge-settings-saved', refreshSystemName);
+});
 const { isDark } = usePreferences();
 const { tokens } = useAntdDesignTokens();
 
@@ -28,7 +65,6 @@ const tokenTheme = computed(() => {
     token: tokens,
   };
 });
-
 </script>
 
 <template>

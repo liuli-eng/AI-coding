@@ -2,7 +2,7 @@
  * 该文件可自行根据业务逻辑进行调整
  */
 
-import type { HttpResponse } from '@vben/request';
+import type { HttpResponse, RequestClientConfig } from '@vben/request';
 import type {
   BaseAsymmetricEncryption,
   BaseSymmetricEncryption,
@@ -14,6 +14,7 @@ import { $t } from '@vben/locales';
 import { preferences } from '@vben/preferences';
 import {
   authenticateResponseInterceptor,
+  CanceledError,
   errorMessageResponseInterceptor,
   RequestClient,
   stringify,
@@ -41,6 +42,14 @@ const { apiURL, clientId, enableEncrypt, rsaPublicKey, rsaPrivateKey } =
 const DATE_TIME_FIELD_PATTERN = /(?:Time|Date|At|_time|_date|_at)$/;
 const NON_DATE_TIME_FIELDS = new Set(['costTime']);
 const TIMESTAMP_PATTERN = /^\d{10}(\d{3})?$/;
+
+function assertResponseCurrent(config?: RequestClientConfig) {
+  if (config?.isResponseCurrent && !config.isResponseCurrent()) {
+    // A cancellation has no response/config, so later auth interceptors cannot
+    // reinterpret the old account's HTTP error against the current account.
+    throw new CanceledError('Request no longer belongs to the active account');
+  }
+}
 
 /**
  * 使用非对称加密的实现 前端已经实现RSA/SM2
@@ -108,6 +117,7 @@ function createRequestClient(baseURL: string) {
 
   client.addRequestInterceptor({
     fulfilled: (config) => {
+      assertResponseCurrent(config);
       const accessStore = useAccessStore();
       // 添加token
       config.headers.Authorization = formatToken(accessStore.accessToken);
@@ -177,6 +187,18 @@ function createRequestClient(baseURL: string) {
     },
   });
 
+  // Only opted-in requests are guarded; run before global toast/auth handlers.
+  client.addResponseInterceptor({
+    fulfilled: (response) => {
+      assertResponseCurrent(response.config);
+      return response;
+    },
+    rejected: (error) => {
+      assertResponseCurrent(error.config ?? error.response?.config);
+      throw error;
+    },
+  });
+
   // 通用的错误处理, 如果没有进入上面的错误处理逻辑，就会进入这里
   // 主要处理http状态码不为200(如网络异常/离线)的情况 必须放在在下面的响应拦截器之前
   client.addResponseInterceptor(
@@ -185,6 +207,7 @@ function createRequestClient(baseURL: string) {
 
   client.addResponseInterceptor<HttpResponse>({
     fulfilled: async (response) => {
+      assertResponseCurrent(response.config);
       const encryptKey = (response.headers ?? {})['encrypt-key'];
       if (encryptKey) {
         /** RSA私钥解密 拿到解密秘钥的base64 */
@@ -236,7 +259,9 @@ function createRequestClient(baseURL: string) {
             // 这时候的data为blob类型
             const blob = response.data as unknown as Blob;
             // 拿到字符串转json对象
-            response.data = JSON.parse(await blob.text());
+            const text = await blob.text();
+            assertResponseCurrent(response.config);
+            response.data = JSON.parse(text);
             // 然后按正常逻辑执行下面的代码(判断业务状态码)
           } else {
             // 其他类型数据 直接返回

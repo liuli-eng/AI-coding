@@ -42,6 +42,10 @@ public class KnowledgeInfoBo extends BaseEntity {
      */
     private Long share;
 
+    /** List filter. Ordinary create/edit does not change the administrator's status choice. */
+    @Pattern(regexp = "[01]", message = "无效的知识库状态")
+    private String status;
+
     /**
      * 知识库描述
      */

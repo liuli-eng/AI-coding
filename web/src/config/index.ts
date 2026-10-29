@@ -12,4 +12,4 @@ export const COLLAPSE_THRESHOLD: number = 960;
 export const SIDE_BAR_WIDTH: number = 280;
 
 // 路由白名单地址[本地存在的路由 staticRouter.ts 中]
-export const ROUTER_WHITE_LIST: string[] = ['/chat', '/chat/not_login', '/media', '/403', '/404'];
+export const ROUTER_WHITE_LIST: string[] = ['/chat', '/chat/not_login', '/media', '/knowledge', '/403', '/404'];

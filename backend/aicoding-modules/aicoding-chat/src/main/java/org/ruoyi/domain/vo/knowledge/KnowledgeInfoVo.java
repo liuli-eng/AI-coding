@@ -33,6 +33,8 @@ public class KnowledgeInfoVo implements Serializable {
     @ExcelProperty(value = "主键")
     private Long id;
 
+    private java.util.Date updateTime;
+
     /**
      * 用户ID
      */
@@ -51,6 +53,9 @@ public class KnowledgeInfoVo implements Serializable {
     @ExcelProperty(value = "是否公开知识库", converter = ExcelDictConvert.class)
     @ExcelDictFormat(readConverterExp = "0=,否=,1=是")
     private Long share;
+
+    @ExcelProperty(value = "状态")
+    private String status;
 
     /**
      * 知识库描述

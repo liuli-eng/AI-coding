@@ -2,22 +2,47 @@
 import type { VbenFormProps } from '@vben/common-ui';
 
 import type { VxeGridProps } from '#/adapter/vxe-table';
-import type { InfoForm } from '#/api/knowledge/info/model';
+import type { InfoForm, InfoVO } from '#/api/knowledge/info/model';
 
 import { ref } from 'vue';
+import { useAccess } from '@vben/access';
 import { Page } from '@vben/common-ui';
 import { getVxePopupContainer } from '@vben/utils';
 
-import { Modal, Popconfirm, Space } from 'ant-design-vue';
+import { Modal, Popconfirm, Space, Switch } from 'ant-design-vue';
 
 import { useVbenModal } from '@vben/common-ui';
 import { useVbenVxeGrid, vxeCheckboxChecked } from '#/adapter/vxe-table';
-import { infoExport, infoList, infoRemove } from '#/api/knowledge/info';
+import {
+  infoExport,
+  infoList,
+  infoRemove,
+  infoStatusChange,
+} from '#/api/knowledge/info';
 import { commonDownloadExcel } from '#/utils/file/download';
 
 import KnowledgeAddModal from './components/KnowledgeAddModal.vue';
 import { columns, querySchema } from './data';
 import { useRouter } from 'vue-router';
+
+const { hasAccessByCodes } = useAccess();
+const statusPending = ref(new Set<string>());
+
+async function handleStatusChange(row: InfoVO) {
+  const id = String(row.id);
+  if (statusPending.value.has(id) || !hasAccessByCodes(['system:info:edit']))
+    return;
+  const status = row.status === '0' ? '1' : '0';
+  statusPending.value.add(id);
+  try {
+    await infoStatusChange(row.id, status);
+    row.status = status;
+  } catch {
+    // The request client displays the error; retain the last saved state for retry.
+  } finally {
+    statusPending.value.delete(id);
+  }
+}
 
 const formOptions: VbenFormProps = {
   commonConfig: {
@@ -147,13 +172,24 @@ function handleDownloadExcel() {
           </a-button>
         </Space>
       </template>
+      <template #status="{ row }">
+        <Space :size="8">
+          <Switch
+            :aria-label="`${row.name}状态`"
+            :checked="row.status === '0'"
+            :loading="statusPending.has(String(row.id))"
+            :disabled="
+              statusPending.has(String(row.id)) ||
+              !hasAccessByCodes(['system:info:edit'])
+            "
+            @change="handleStatusChange(row)"
+          />
+          <span>{{ row.status === '0' ? '启用' : '停用' }}</span>
+        </Space>
+      </template>
       <template #action="{ row }">
         <Space>
-          <ghost-button
-            @click.stop="handleDetail(row)"
-          >
-            详情
-          </ghost-button>
+          <ghost-button @click.stop="handleDetail(row)"> 详情 </ghost-button>
           <Popconfirm
             :get-popup-container="getVxePopupContainer"
             placement="left"

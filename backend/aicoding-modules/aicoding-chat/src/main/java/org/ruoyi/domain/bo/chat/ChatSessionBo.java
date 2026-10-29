@@ -38,6 +38,9 @@ public class ChatSessionBo extends BaseEntity {
     /** Persisted teaching/programming/debugging policy. */
     private String chatMode;
 
+    /** Optional ordinary-chat knowledge source, stored as a string to preserve ID precision. */
+    private String knowledgeId;
+
     private Long promptId;
 
 

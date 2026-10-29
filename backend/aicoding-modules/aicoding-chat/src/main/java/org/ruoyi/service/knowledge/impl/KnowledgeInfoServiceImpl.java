@@ -45,6 +45,7 @@ public class KnowledgeInfoServiceImpl implements IKnowledgeInfoService {
     private final org.ruoyi.service.vector.VectorStoreService vectorStoreService;
     private final KnowledgeRetrievalService knowledgeRetrievalService;
     private final OssService ossService;
+    private final org.ruoyi.service.knowledge.KnowledgeSettingsService settings;
 
     /**
      * 查询知识库
@@ -92,6 +93,7 @@ public class KnowledgeInfoServiceImpl implements IKnowledgeInfoService {
         lqw.eq(bo.getUserId() != null, KnowledgeInfo::getUserId, bo.getUserId());
         lqw.like(StringUtils.isNotBlank(bo.getName()), KnowledgeInfo::getName, bo.getName());
         lqw.eq(bo.getShare() != null, KnowledgeInfo::getShare, bo.getShare());
+        lqw.eq(bo.getStatus() != null, KnowledgeInfo::getStatus, bo.getStatus());
         lqw.eq(StringUtils.isNotBlank(bo.getDescription()), KnowledgeInfo::getDescription, bo.getDescription());
         lqw.eq(StringUtils.isNotBlank(bo.getSeparator()), KnowledgeInfo::getSeparator, bo.getSeparator());
         lqw.eq(bo.getOverlapChar() != null, KnowledgeInfo::getOverlapChar, bo.getOverlapChar());
@@ -126,6 +128,8 @@ public class KnowledgeInfoServiceImpl implements IKnowledgeInfoService {
     @Override
     public Boolean insertByBo(KnowledgeInfoBo bo) {
         KnowledgeInfo add = MapstructUtils.convert(bo, KnowledgeInfo.class);
+        add.setStatus("0");
+        if(add.getSimilarityThreshold()==null)add.setSimilarityThreshold(settings.current().similarityThreshold());
         validEntityBeforeSave(add);
         boolean flag = baseMapper.insert(add) > 0;
         if (flag) {
@@ -143,6 +147,8 @@ public class KnowledgeInfoServiceImpl implements IKnowledgeInfoService {
     @Override
     public Boolean updateByBo(KnowledgeInfoBo bo) {
         KnowledgeInfo update = MapstructUtils.convert(bo, KnowledgeInfo.class);
+        // A stale settings form must not undo an administrator's later disable action.
+        update.setStatus(null);
         validEntityBeforeSave(update);
         boolean updated = baseMapper.updateById(update) > 0;
         if (updated) knowledgeRetrievalService.invalidateKnowledge(String.valueOf(bo.getId()));

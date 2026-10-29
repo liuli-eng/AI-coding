@@ -14,6 +14,7 @@ import { useUserStore } from '@/stores/modules/user';
 const props = defineProps<{
   modelValue?: string;
   loading?: boolean;
+  disabled?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -39,6 +40,8 @@ const senderValue = computed({
 const senderRef = ref<InstanceType<typeof Sender> | null>(null);
 
 function handleSubmit() {
+  if (props.disabled || props.loading)
+    return;
   if (!isLoggedIn.value) {
     userStore.ensureLogin('/chat', '登录后即可开始对话');
     return;
@@ -99,6 +102,7 @@ defineExpose({
     clearable
     allow-speech
     :loading="loading"
+    :disabled="disabled"
     @submit="handleSubmit"
     @cancel="handleCancel"
   >

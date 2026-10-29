@@ -1,6 +1,7 @@
 import type { AgentVO } from '@/api/agent/types';
 import { defineStore } from 'pinia';
 import { getAgentList } from '@/api';
+import { useChatStore } from './chat';
 import { useUserStore } from './user';
 
 // 智能体管理
@@ -11,11 +12,17 @@ export const useAgentStore = defineStore('agent', () => {
   // 设置当前智能体
   const setCurrentAgentInfo = (agentInfo: AgentVO) => {
     currentAgentInfo.value = agentInfo;
+    if (agentInfo.id)
+      useChatStore().setDraftKnowledge(null);
   };
 
   const clearCurrentAgentInfo = () => {
     currentAgentInfo.value = {};
   };
+
+  watch(() => useUserStore().token, () => {
+    currentAgentInfo.value = {};
+  }, { flush: 'sync' });
 
   // 智能体列表
   const agentList = ref<AgentVO[]>([]);

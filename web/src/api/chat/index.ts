@@ -17,11 +17,6 @@ export function getChatList(params: GetChatListParams) {
   return get<ChatMessageVo[]>('/system/message/list', params).json();
 }
 
-// 获取知识库列表
-export function getKnowledgeList() {
-  return get('/system/info/list').json();
-}
-
 // 获取公开工作流列表（分页）。后端 GET /workflow/public/search 返回 R<Page<WorkflowResp>>，
 // hook-fetch 解包后为 { total, rows }。用公开接口而非 /admin/workflow/search，
 // 后者非管理员只能看到自己创建的工作流，应用市场需要展示所有公开流程。

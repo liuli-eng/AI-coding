@@ -3,7 +3,6 @@ package org.ruoyi.service.knowledge.impl;
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.RandomUtil;
 import cn.hutool.crypto.digest.DigestUtil;
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
@@ -14,7 +13,6 @@ import org.ruoyi.enums.KnowledgeAttachStatus;
 import org.ruoyi.common.core.domain.dto.OssDTO;
 import org.ruoyi.common.core.exception.ServiceException;
 import org.ruoyi.common.core.service.OssService;
-import org.ruoyi.common.core.utils.MapstructUtils;
 import org.ruoyi.common.core.utils.SpringUtils;
 import org.ruoyi.common.core.utils.StringUtils;
 import org.ruoyi.common.mybatis.core.page.PageQuery;
@@ -66,24 +64,29 @@ public class KnowledgeAttachServiceImpl implements IKnowledgeAttachService {
     private final VectorStoreService vectorStoreService;
     private final OssService ossService;
     private final KnowledgeRetrievalService knowledgeRetrievalService;
+    private final org.ruoyi.service.knowledge.KnowledgeSettingsService settings;
+    private final org.ruoyi.service.knowledge.KnowledgeAdminAccess access;
+    private final org.ruoyi.service.knowledge.KnowledgeParseFailureRecorder parseFailure;
+    private final org.ruoyi.service.knowledge.KnowledgeDocumentStorage storage;
 
     @Override
     public KnowledgeAttachVo queryById(Long id) {
+        access.requireDocument(id);
         return baseMapper.selectVoById(id);
     }
 
     @Override
     public TableDataInfo<KnowledgeAttachVo> queryPageList(KnowledgeAttachBo bo, PageQuery pageQuery) {
-        LambdaQueryWrapper<KnowledgeAttach> lqw = buildQueryWrapper(bo);
-        Page<KnowledgeAttachVo> result = baseMapper.selectVoPage(pageQuery.build(), lqw);
+        if(bo.getKnowledgeId()!=null)access.requireKnowledge(bo.getKnowledgeId(),false);
+        Page<KnowledgeAttachVo> result = baseMapper.workbench(pageQuery.build(), org.ruoyi.service.knowledge.KnowledgeSettingsService.tenant(), bo);
         fillFragmentCount(result.getRecords());
         return TableDataInfo.build(result);
     }
 
     @Override
     public List<KnowledgeAttachVo> queryList(KnowledgeAttachBo bo) {
-        LambdaQueryWrapper<KnowledgeAttach> lqw = buildQueryWrapper(bo);
-        List<KnowledgeAttachVo> list = baseMapper.selectVoList(lqw);
+        if(bo.getKnowledgeId()!=null)access.requireKnowledge(bo.getKnowledgeId(),false);
+        List<KnowledgeAttachVo> list = baseMapper.workbench(new Page<KnowledgeAttachVo>(1,-1,false), org.ruoyi.service.knowledge.KnowledgeSettingsService.tenant(), bo).getRecords();
         fillFragmentCount(list);
         return list;
     }
@@ -104,82 +107,114 @@ public class KnowledgeAttachServiceImpl implements IKnowledgeAttachService {
         }
     }
 
-    private LambdaQueryWrapper<KnowledgeAttach> buildQueryWrapper(KnowledgeAttachBo bo) {
-        LambdaQueryWrapper<KnowledgeAttach> lqw = Wrappers.lambdaQuery();
-        lqw.orderByAsc(KnowledgeAttach::getId);
-        lqw.eq(bo.getKnowledgeId() != null, KnowledgeAttach::getKnowledgeId, bo.getKnowledgeId());
-        lqw.like(StringUtils.isNotBlank(bo.getName()), KnowledgeAttach::getName, bo.getName());
-        lqw.eq(StringUtils.isNotBlank(bo.getType()), KnowledgeAttach::getType, bo.getType());
-        lqw.eq(bo.getOssId() != null, KnowledgeAttach::getOssId, bo.getOssId());
-        return lqw;
-    }
-
     @Override
     public Boolean insertByBo(KnowledgeAttachBo bo) {
-        KnowledgeAttach add = MapstructUtils.convert(bo, KnowledgeAttach.class);
-        boolean flag = baseMapper.insert(add) > 0;
-        if (flag) {
-            bo.setId(add.getId());
-        }
-        return flag;
+        // Files are created only by the validated multipart upload path.
+        throw new org.ruoyi.service.knowledge.KnowledgeDocumentException(org.ruoyi.service.knowledge.KnowledgeDocumentException.Reason.INVALID_FILE);
     }
 
     @Override
     public Boolean updateByBo(KnowledgeAttachBo bo) {
-        KnowledgeAttach update = MapstructUtils.convert(bo, KnowledgeAttach.class);
-        return baseMapper.updateById(update) > 0;
+        var existing=access.requireDocument(bo.getId());
+        var update=new KnowledgeAttach();update.setId(existing.getId());
+        update.setRemark(bo.getRemark());
+        return baseMapper.updateById(update)>0;
     }
 
     @Override
+    @org.springframework.transaction.annotation.Transactional(rollbackFor=Exception.class)
     public Boolean deleteWithValidByIds(Collection<Long> ids, Boolean isValid) {
-        // 删除附件前，同步清理其片段记录与向量库中的向量
-        List<KnowledgeAttach> attaches = baseMapper.selectByIds(ids);
-        for (KnowledgeAttach attach : attaches) {
-            String docId = attach.getDocId();
-            String kid = String.valueOf(attach.getKnowledgeId());
-            vectorStoreService.removeByDocId(docId, kid);
-            knowledgeFragmentMapper.delete(
-                Wrappers.<KnowledgeFragment>lambdaQuery().eq(KnowledgeFragment::getDocId, docId));
-            if (attach.getOssId() != null) {
-                ossService.deleteFile(attach.getOssId());
-            }
-            knowledgeRetrievalService.invalidateKnowledge(kid);
+        if(ids==null||ids.isEmpty())return false;
+        var attaches=ids.stream().distinct().sorted().map(id->access.requireDocument(id,true)).toList();
+        for(var attach:attaches)if(Integer.valueOf(1).equals(attach.getStatus()))throw documentError(org.ruoyi.service.knowledge.KnowledgeDocumentException.Reason.PARSING);
+        for(var attach:attaches){
+            String kid=String.valueOf(attach.getKnowledgeId());
+            knowledgeFragmentMapper.delete(Wrappers.<KnowledgeFragment>lambdaQuery().eq(KnowledgeFragment::getDocId,attach.getDocId()));
         }
-        return baseMapper.deleteByIds(ids) > 0;
+        boolean deleted=baseMapper.deleteByIds(ids)>0;
+        if(deleted)afterCommit(()->attaches.forEach(a->{
+            cleanupObject(a.getOssId());
+            cleanupVector(a.getDocId(),String.valueOf(a.getKnowledgeId()));
+            invalidateCache(String.valueOf(a.getKnowledgeId()));
+        }));
+        return deleted;
     }
 
     @Override
+    @org.springframework.transaction.annotation.Transactional(rollbackFor=Exception.class)
     public void upload(KnowledgeInfoUploadBo bo) {
-        MultipartFile file = bo.getFile();
-        final String fileHash;
-        try (InputStream input = file.getInputStream()) {
-            fileHash = DigestUtil.sha256Hex(input);
-        } catch (Exception e) {
-            throw new ServiceException("计算文件摘要失败", e);
+        String tenant=org.ruoyi.service.knowledge.KnowledgeSettingsService.tenant();
+        access.requireKnowledge(bo.getKnowledgeId(),true); // Serialize competing uploads for one library.
+        var policy=settings.current();
+        MultipartFile file=bo.getFile();String suffix=settings.validateUpload(file,policy);
+        String name=org.ruoyi.service.knowledge.KnowledgeSettingsService.filename(file);
+        String fileHash;
+        long fileSize;
+        try(InputStream input=file.getInputStream()){
+            byte[] bytes=input.readNBytes(org.ruoyi.service.knowledge.KnowledgeSettingsService.MAX_FILE_SIZE+1);
+            fileSize=bytes.length;
+            if(fileSize==0)throw documentError(org.ruoyi.service.knowledge.KnowledgeDocumentException.Reason.EMPTY_FILE);
+            if(fileSize>org.ruoyi.service.knowledge.KnowledgeSettingsService.MAX_FILE_SIZE)throw documentError(org.ruoyi.service.knowledge.KnowledgeDocumentException.Reason.FILE_TOO_LARGE);
+            fileHash=DigestUtil.sha256Hex(bytes);
+        }catch(java.io.IOException e){throw documentError(org.ruoyi.service.knowledge.KnowledgeDocumentException.Reason.READ_FAILED);}
+        boolean duplicate=baseMapper.exists(Wrappers.<KnowledgeAttach>lambdaQuery().eq(KnowledgeAttach::getKnowledgeId,bo.getKnowledgeId()).eq(KnowledgeAttach::getTenantId,tenant).eq(KnowledgeAttach::getFileHash,fileHash));
+        if(duplicate)throw documentError(org.ruoyi.service.knowledge.KnowledgeDocumentException.Reason.DUPLICATE);
+        var old=baseMapper.selectOne(Wrappers.<KnowledgeAttach>lambdaQuery().eq(KnowledgeAttach::getKnowledgeId,bo.getKnowledgeId()).eq(KnowledgeAttach::getTenantId,tenant).eq(KnowledgeAttach::getName,name).last("FOR UPDATE"));
+        if(old!=null&&!policy.overwriteSameName())throw documentError(org.ruoyi.service.knowledge.KnowledgeDocumentException.Reason.SAME_NAME);
+        if(old!=null&&Integer.valueOf(1).equals(old.getStatus()))throw documentError(org.ruoyi.service.knowledge.KnowledgeDocumentException.Reason.PARSING);
+        OssDTO object;
+        try{object=storage.upload(file);}catch(RuntimeException error){throw documentError(org.ruoyi.service.knowledge.KnowledgeDocumentException.Reason.STORAGE_FAILED);}
+        if(object==null||object.getOssId()==null)throw documentError(org.ruoyi.service.knowledge.KnowledgeDocumentException.Reason.STORAGE_FAILED);
+        Long previousObject=old==null?null:old.getOssId();String previousDoc=old==null?null:old.getDocId();
+        var row=old==null?new KnowledgeAttach():old;
+        row.setKnowledgeId(bo.getKnowledgeId());row.setTenantId(tenant);row.setOssId(object.getOssId());row.setDocId(RandomUtil.randomString(20));
+        row.setFileHash(fileHash);row.setName(name);row.setType(suffix);row.setFileSize(fileSize);row.setStatus(0);row.setRemark(null);
+        row.setCreateBy(org.ruoyi.common.satoken.utils.LoginHelper.getUserId());row.setCreateTime(new Date());
+        if(old==null)row.setBusinessState("0");
+        try{
+            int saved=old==null?baseMapper.insert(row):baseMapper.updateById(row);
+            if(saved!=1)throw documentError(org.ruoyi.service.knowledge.KnowledgeDocumentException.Reason.STORAGE_FAILED);
+            if(previousDoc!=null){
+                knowledgeFragmentMapper.delete(Wrappers.<KnowledgeFragment>lambdaQuery().eq(KnowledgeFragment::getDocId,previousDoc));
+            }
+        }catch(RuntimeException failure){cleanupObject(object.getOssId());throw failure;}
+        if(org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()){
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization(){
+                @Override public void afterCompletion(int status){if(status==STATUS_ROLLED_BACK)cleanupObject(object.getOssId());}
+            });
         }
-        boolean duplicate = baseMapper.exists(Wrappers.<KnowledgeAttach>lambdaQuery()
-            .eq(KnowledgeAttach::getKnowledgeId, bo.getKnowledgeId())
-            .eq(KnowledgeAttach::getFileHash, fileHash));
-        if (duplicate) {
-            throw new ServiceException("该文件已上传，请勿重复提交");
-        }
-        OssDTO ossDTO = ossService.uploadFile(file);
-
-        KnowledgeAttach knowledgeAttach = new KnowledgeAttach();
-        knowledgeAttach.setKnowledgeId(bo.getKnowledgeId());
-        knowledgeAttach.setOssId(ossDTO.getOssId());
-        knowledgeAttach.setDocId(RandomUtil.randomString(10));
-        knowledgeAttach.setFileHash(fileHash);
-        knowledgeAttach.setName(ossDTO.getOriginalName());
-        knowledgeAttach.setType(ossDTO.getFileSuffix());
-        knowledgeAttach.setStatus(KnowledgeAttachStatus.WAITING.getCode()); // 待解析
-
-        baseMapper.insert(knowledgeAttach);
-
-        if (Boolean.TRUE.equals(bo.getAutoParse())) {
-            // 通过 SpringUtils 获取代理对象，确保 @Async 生效
-            SpringUtils.getBean(IKnowledgeAttachService.class).parse(knowledgeAttach.getId());
-        }
+        afterCommit(()->{
+            if(previousObject!=null)cleanupObject(previousObject);
+            if(previousDoc!=null)cleanupVector(previousDoc,String.valueOf(bo.getKnowledgeId()));
+            invalidateCache(String.valueOf(bo.getKnowledgeId()));
+            if(Boolean.TRUE.equals(bo.getAutoParse())){
+                try{SpringUtils.getBean(IKnowledgeAttachService.class).parse(row.getId());}
+                catch(RuntimeException error){
+                    try{parseFailure.record(row.getId(),row.getOssId(),policy.failureMessage());}
+                    catch(RuntimeException recordError){log.warn("Document submission failure state could not be recorded, id={}",row.getId());}
+                    log.warn("Document parse submission failed, id={}, errorType={}",row.getId(),error.getClass().getSimpleName());
+                }
+            }
+        });
+    }
+    private org.ruoyi.service.knowledge.KnowledgeDocumentException documentError(org.ruoyi.service.knowledge.KnowledgeDocumentException.Reason reason){return new org.ruoyi.service.knowledge.KnowledgeDocumentException(reason);}
+    private void afterCommit(Runnable operation){
+        if(org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive())
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization(){@Override public void afterCommit(){operation.run();}});
+        else operation.run();
+    }
+    private void cleanupVector(String docId,String knowledgeId){
+        try{vectorStoreService.removeByDocId(docId,knowledgeId);}
+        catch(RuntimeException error){log.warn("Document vector cleanup needs retry, knowledgeId={}, errorType={}",knowledgeId,error.getClass().getSimpleName());}
+    }
+    private void invalidateCache(String knowledgeId){
+        try{knowledgeRetrievalService.invalidateKnowledge(knowledgeId);}
+        catch(RuntimeException error){log.warn("Document cache invalidation failed, knowledgeId={}, errorType={}",knowledgeId,error.getClass().getSimpleName());}
+    }
+    private void cleanupObject(Long id){
+        if(id==null)return;
+        try{if(!Boolean.TRUE.equals(ossService.deleteFile(id)))log.warn("Document object cleanup needs retry, id={}",id);}
+        catch(RuntimeException e){log.warn("Document object cleanup needs retry, id={}, errorType={}",id,e.getClass().getSimpleName());}
     }
 
     @Async("knowledgeParseExecutor")
@@ -194,12 +229,12 @@ public class KnowledgeAttachServiceImpl implements IKnowledgeAttachService {
             .set(KnowledgeAttach::getStatus, KnowledgeAttachStatus.PARSING.getCode())
             .set(KnowledgeAttach::getRemark, null)
             .eq(KnowledgeAttach::getId, id)
-            .ne(KnowledgeAttach::getStatus, KnowledgeAttachStatus.PARSING.getCode()));
+            .ne(KnowledgeAttach::getStatus, KnowledgeAttachStatus.PARSING.getCode())
+            .eq(KnowledgeAttach::getOssId, attach.getOssId()));
         if (claimed == 0) return;
 
         try {
             attach.setStatus(KnowledgeAttachStatus.PARSING.getCode()); // 解析中
-            baseMapper.updateById(attach);
 
             log.info("开始解析知识库文档... id: {}, docId: {}", id, attach.getDocId());
 
@@ -280,20 +315,33 @@ public class KnowledgeAttachServiceImpl implements IKnowledgeAttachService {
             knowledgeRetrievalService.invalidateKnowledge(String.valueOf(knowledgeId));
 
             attach.setStatus(KnowledgeAttachStatus.COMPLETED.getCode()); // 已完成
-            baseMapper.updateById(attach);
+            finishParsing(attach,KnowledgeAttachStatus.COMPLETED.getCode(),null);
             log.info("知识库文档解析、向量化并入库成功！id: {}", id);
         } catch (Exception e) {
-            log.error("解析文档失败！id: {}, error: {}", id, e.getMessage(), e);
+            log.error("Document parse failed, id={}, errorType={}", id, e.getClass().getSimpleName());
             attach.setStatus(KnowledgeAttachStatus.FAILED.getCode()); // 失败
-            attach.setRemark(StringUtils.substring(e.getMessage(), 0, 255)); // 保存错误原因，截取防止溢出
-            baseMapper.updateById(attach);
+            String hint=org.ruoyi.service.knowledge.KnowledgeSettingsService.defaults().failureMessage();
+            try{
+                String tenant=attach.getTenantId();
+                if(tenant!=null&&tenant.matches("[0-9]{1,5}"))tenant="0".repeat(6-tenant.length())+tenant;
+                hint=settings.forTenant(tenant).failureMessage();
+            }catch(RuntimeException ignored){/* Use the safe default if settings cannot be read. */}
+            finishParsing(attach,KnowledgeAttachStatus.FAILED.getCode(),hint);
         }
+    }
+
+    private void finishParsing(KnowledgeAttach source,Integer status,String remark){
+        baseMapper.update(null,Wrappers.<KnowledgeAttach>lambdaUpdate()
+            .eq(KnowledgeAttach::getId,source.getId()).eq(KnowledgeAttach::getOssId,source.getOssId())
+            .eq(KnowledgeAttach::getDocId,source.getDocId()).eq(KnowledgeAttach::getStatus,KnowledgeAttachStatus.PARSING.getCode())
+            .set(KnowledgeAttach::getStatus,status).set(KnowledgeAttach::getRemark,remark));
     }
 
     @Override
     public KnowledgeReparseVo reparseKnowledge(Long knowledgeId) {
+        access.requireKnowledge(knowledgeId,false);
         List<KnowledgeAttach> attachments = baseMapper.selectList(
-            Wrappers.<KnowledgeAttach>lambdaQuery().eq(KnowledgeAttach::getKnowledgeId, knowledgeId));
+            Wrappers.<KnowledgeAttach>lambdaQuery().eq(KnowledgeAttach::getKnowledgeId, knowledgeId).eq(KnowledgeAttach::getTenantId, org.ruoyi.service.knowledge.KnowledgeSettingsService.tenant()));
         int submitted = 0;
         int skipped = 0;
         IKnowledgeAttachService proxy = SpringUtils.getBean(IKnowledgeAttachService.class);

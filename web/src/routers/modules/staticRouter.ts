@@ -36,6 +36,12 @@ export const layoutRouter: RouteRecordRaw[] = [
         },
       },
       {
+        path: '/knowledge',
+        name: 'knowledge',
+        component: () => import('@/pages/knowledge/index.vue'),
+        meta: { title: '知识库', stayOnAuthExpired: true },
+      },
+      {
         path: '/learning',
         name: 'myLearning',
         component: () => import('@/pages/learning/index.vue'),

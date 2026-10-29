@@ -11,6 +11,7 @@ public class LearningCourse extends TenantEntity {
     private String title;
     private String description;
     private String chapters;
+    private String materialIds;
     private String status;
     private Integer version;
 }

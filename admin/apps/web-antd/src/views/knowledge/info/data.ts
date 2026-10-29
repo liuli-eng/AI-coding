@@ -7,6 +7,17 @@ export const querySchema: FormSchemaGetter = () => [
     fieldName: 'name',
     label: '知识库名称',
   },
+  {
+    component: 'Select',
+    fieldName: 'status',
+    label: '状态',
+    componentProps: {
+      options: [
+        { label: '启用', value: '0' },
+        { label: '停用', value: '1' },
+      ],
+    },
+  },
 ];
 
 /**
@@ -31,6 +42,12 @@ export const columns: VxeGridProps['columns'] = [
   {
     title: '文档数',
     field: 'documentCount', // Use documentCount or fileCount, depending on backend. We can set it to field 'docCount'
+  },
+  {
+    field: 'status',
+    title: '状态',
+    width: 110,
+    slots: { default: 'status' },
   },
   {
     field: 'action',

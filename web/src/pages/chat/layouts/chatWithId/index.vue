@@ -12,11 +12,13 @@ import { useRoute } from 'vue-router';
 import { send } from '@/api';
 import { reportAnswer } from '@/api/chat';
 import ChatSender from '@/components/ChatSender/index.vue';
+import SessionKnowledge from '@/components/SessionKnowledge/index.vue';
+import SessionMaterials from '@/components/SessionMaterials/index.vue';
 import { useAgentStore } from '@/stores/modules/agent';
 import { useChatStore } from '@/stores/modules/chat';
 import { useModelStore } from '@/stores/modules/model';
-import { useUserStore } from '@/stores/modules/user';
 import { useSessionStore } from '@/stores/modules/session';
+import { useUserStore } from '@/stores/modules/user';
 import { codeXRender } from '@/utils/markdownRenderers';
 import { buildWorkflowInputs, workflowFinalText } from '@/utils/workflow';
 import ToolCallCard from './components/ToolCallCard.vue';
@@ -91,59 +93,50 @@ onMounted(() => {
 // 记录进入思考中
 let isThinking = false;
 
-watch(
-  () => route.params?.id,
-  async (_id_) => {
-    if (_id_) {
-      // 切换会话时清空工具调用事件与工作流运行状态
-      toolCallEvents.value = [];
-      toolCallKeyCounter = 0;
-
-      if (_id_ !== 'not_login') {
-        // 判断的当前会话id是否有聊天记录，有缓存则直接赋值展示
-        if (chatStore.chatMap[`${_id_}`] && chatStore.chatMap[`${_id_}`].length) {
-          bubbleItems.value = chatStore.chatMap[`${_id_}`] as MessageItem[];
-          // 滚动到底部
-          setTimeout(() => {
-            bubbleListRef.value?.scrollToBottom();
-          }, 350);
-          return;
-        }
-
-        // 无缓存则请求聊天记录
-        await chatStore.requestChatList(`${_id_}`);
-        // 请求聊天记录后，赋值回显，并滚动到底部
-        bubbleItems.value = chatStore.chatMap[`${_id_}`] as MessageItem[];
-
-        // 滚动到底部
-        setTimeout(() => {
-          bubbleListRef.value?.scrollToBottom();
-        }, 350);
-      }
-
-      // 如果本地有发送内容 ，则直接发送
-      const v = localStorage.getItem('chatContent');
-      if (v) {
-        // 发送消息
-        setTimeout(() => {
-          startSSE(v);
-        }, 350);
-
-        localStorage.removeItem('chatContent');
-      }
-    }
-  },
-  { immediate: true, deep: true },
-);
+let loadSequence = 0;
+const conversationReady = ref(false);
+async function restoreConversation() {
+  const id = String(route.params.id || '');
+  const sequence = ++loadSequence;
+  conversationReady.value = false;
+  cancel();
+  bubbleItems.value = [];
+  toolCallEvents.value = [];
+  toolCallKeyCounter = 0;
+  if (!id || id === 'not_login' || !userStore.token)
+    return;
+  const session = await sessionStore.restoreSession(id);
+  if (!session || sequence !== loadSequence)
+    return;
+  await chatStore.requestChatList(id);
+  if (sequence !== loadSequence)
+    return;
+  bubbleItems.value = (chatStore.chatMap[id] || []) as MessageItem[];
+  await nextTick();
+  if (sequence !== loadSequence || !userStore.token || sessionStore.currentSession?.id !== id)
+    return;
+  bubbleListRef.value?.scrollToBottom();
+  conversationReady.value = true;
+  const content = chatStore.pendingMessage?.sessionId === id ? chatStore.pendingMessage.content : '';
+  if (content)
+    startSSE(content, true);
+}
+watch(() => route.params.id, restoreConversation, { immediate: true });
+onBeforeUnmount(() => {
+  loadSequence++;
+  cancel();
+});
 
 async function report(item: MessageItem) {
-  if (!item.questionId || item.reporting || item.reported) return;
+  if (!item.questionId || item.reporting || item.reported)
+    return;
   item.reporting = true;
   try {
     await reportAnswer(item.questionId);
     item.reported = true;
     ElMessage.success('已提交反馈，管理员将复核本次回答');
-  } catch { ElMessage.error('反馈提交失败，请重试'); }
+  }
+  catch { ElMessage.error('反馈提交失败，请重试'); }
   finally { item.reporting = false; }
 }
 
@@ -152,11 +145,19 @@ function handleError(err: any) {
   console.error('Fetch error:', err);
 }
 
-async function startSSE(chatContent: string) {
+async function startSSE(chatContent: string, fromPending = false) {
   if (!userStore.token) {
     userStore.ensureLogin('/chat', '登录后即可继续当前对话');
     return;
   }
+
+  if (!conversationReady.value || isLoading.value || sessionStore.sessionLoading || sessionStore.sessionError || !chatContent.trim())
+    return;
+  const sessionId = String(route.params.id || '');
+  if (sessionStore.currentSession?.id !== sessionId)
+    return;
+  if (fromPending)
+    chatStore.takePendingMessage(sessionId);
 
   try {
     // 清空上一次的工具调用事件
@@ -184,6 +185,7 @@ async function startSSE(chatContent: string) {
       model: modelStore.currentModelInfo.modelName ?? '',
       agentId: agentStore.currentAgentInfo?.id || undefined,
       content: lastUserMessage?.content ?? '',
+      knowledgeId: currentBinding.value || agentStore.currentAgentInfo?.id ? undefined : sessionStore.currentSession?.knowledgeId || undefined,
       sessionId: route.params?.id !== 'not_login' ? String(route.params?.id) : undefined,
     };
 
@@ -284,7 +286,8 @@ function handleDataChunk(chunk: AnyObject | string): boolean {
       eventType = dataObj?.event || eventType;
       if (eventType === 'question') {
         const answer = bubbleItems.value[bubbleItems.value.length - 1];
-        if (answer) answer.questionId = String(dataObj?.content || '');
+        if (answer)
+          answer.questionId = String(dataObj?.content || '');
         return false;
       }
 
@@ -324,10 +327,12 @@ function handleDataChunk(chunk: AnyObject | string): boolean {
     else if (typeof chunk === 'object' && chunk !== null) {
       if (chunk.event === 'question') {
         const answer = bubbleItems.value[bubbleItems.value.length - 1];
-        if (answer) answer.questionId = String(chunk.content || '');
+        if (answer)
+          answer.questionId = String(chunk.content || '');
         return false;
       }
-      if (chunk.event === 'done' || chunk.done === true) return true;
+      if (chunk.event === 'done' || chunk.done === true)
+        return true;
       const reasoningChunk = chunk?.choices?.[0]?.delta?.reasoning_content;
       if (reasoningChunk) {
         const lastMessage = bubbleItems.value[bubbleItems.value.length - 1];
@@ -698,11 +703,24 @@ function sendMessageByKey(key: number) {
       </BubbleList>
 
       <div class="sender-wrapper">
-        <p v-if="!currentBinding && !agentStore.currentAgentInfo?.id" class="mb-2 text-sm text-[var(--el-text-color-secondary)]">{{ modeLabel }} · 本次会话持续生效<span v-if="sessionStore.currentSession?.promptName"> · {{sessionStore.currentSession.promptName}} v{{sessionStore.currentSession.promptVersion}}</span></p>
+        <p v-if="!conversationReady && !sessionStore.sessionError" role="status" class="mb-2 text-sm">
+          正在恢复会话…
+        </p>
+        <el-alert v-if="sessionStore.sessionError" :title="sessionStore.sessionError" type="error" :closable="false" role="alert">
+          <el-button link @click="restoreConversation">
+            重试
+          </el-button>
+        </el-alert>
+        <SessionMaterials v-if="userStore.token && sessionStore.currentSession?.id === String(route.params.id) && !sessionStore.sessionLoading && !sessionStore.sessionError" :key="`${userStore.token}:${route.params.id}`" :session-id="String(route.params.id)" />
+        <SessionKnowledge v-if="!currentBinding && !agentStore.currentAgentInfo?.id && !sessionStore.sessionLoading && !sessionStore.sessionError" :knowledge-id="sessionStore.currentSession?.knowledgeId" />
+        <p v-if="!currentBinding && !agentStore.currentAgentInfo?.id" class="mb-2 text-sm text-[var(--el-text-color-secondary)]">
+          {{ modeLabel }} · 本次会话持续生效<span v-if="sessionStore.currentSession?.promptName"> · {{ sessionStore.currentSession.promptName }} v{{ sessionStore.currentSession.promptVersion }}</span>
+        </p>
         <ChatSender
           ref="chatSenderRef"
           v-model="inputValue"
           :loading="isLoading"
+          :disabled="!conversationReady || sessionStore.sessionLoading || !!sessionStore.sessionError"
           @submit="startSSE"
           @cancel="cancelSSE"
         />

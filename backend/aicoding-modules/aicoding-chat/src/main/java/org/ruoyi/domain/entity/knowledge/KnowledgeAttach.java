@@ -21,6 +21,10 @@ public class KnowledgeAttach extends BaseEntity {
     @Serial
     private static final long serialVersionUID = 1L;
 
+    private Long fileSize;
+    private String businessState;
+    private String tenantId;
+
     /**
      * 主键
      */

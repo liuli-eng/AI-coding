@@ -17,7 +17,7 @@ public class LearningCourseController {
     @GetMapping("/{id}") @SaCheckPermission("learning:course:query")
     public R<LearningCourseService.CourseDetail> detail(@PathVariable Long id){return R.ok(service.detail(id));}
     @PostMapping @SaCheckPermission("learning:course:add") @Log(title="课程管理",businessType=BusinessType.INSERT)
-    public R<Long> add(@Valid @RequestBody CourseSave body){return R.ok(service.save(null,body));}
+    public R<String> add(@Valid @RequestBody CourseSave body){return R.ok("保存成功",service.save(null,body).toString());}
     @PutMapping("/{id}") @SaCheckPermission("learning:course:edit") @Log(title="课程管理",businessType=BusinessType.UPDATE)
-    public R<Long> edit(@PathVariable Long id,@Valid @RequestBody CourseSave body){return R.ok(service.save(id,body));}
+    public R<String> edit(@PathVariable Long id,@Valid @RequestBody CourseSave body){return R.ok("保存成功",service.save(id,body).toString());}
 }

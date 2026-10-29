@@ -53,6 +53,7 @@ export interface GetSessionListParams {
   promptId?: string;
   promptName?: string;
   promptVersion?: number;
+  knowledgeId?: string | null;
   /**
    * 更新者
    */
@@ -92,6 +93,7 @@ export interface ChatSessionVo {
   promptId?: string;
   promptName?: string;
   promptVersion?: number;
+  knowledgeId?: string | null;
   /**
    * 用户id
    */
@@ -105,6 +107,9 @@ export interface ChatSessionVo {
    */
   prefixIcon?: Component;
 }
+
+/** Backend Long IDs are numbers within the JS safe range and strings above it. */
+export type ChatSessionResponse = Omit<ChatSessionVo, 'id'> & { id?: string | number };
 
 /**
  * ChatSessionBo，会话管理业务对象 chat_session
@@ -147,6 +152,7 @@ export interface CreateSessionDTO {
   promptId?: string;
   promptName?: string;
   promptVersion?: number;
+  knowledgeId?: string | null;
   /**
    * 更新者
    */

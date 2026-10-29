@@ -127,6 +127,7 @@ public class KnowledgeAttachController extends BaseController {
     @PostMapping("/parse/{id}")
     @RepeatSubmit()
     public R<Void> parse(@PathVariable Long id) {
+        knowledgeAttachService.queryById(id); // Authorize before dispatching the async operation.
         knowledgeAttachService.parse(id);
         return R.ok();
     }

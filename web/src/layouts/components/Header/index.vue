@@ -65,6 +65,7 @@ onKeyStroke(event => event.ctrlKey && event.key.toLowerCase() === 'k', handleCtr
             <!-- 中间 -->
             <div class="middle-box flex-1 min-w-0 ml-12px">
               <span v-if="route.name === 'mediaWorkbench'" class="font-size-14px">媒体工作台</span>
+              <span v-else-if="route.name === 'knowledge'" class="font-size-14px">知识库</span>
               <TitleEditing v-else />
             </div>
           </div>

@@ -22,6 +22,10 @@ import org.ruoyi.common.chat.domain.vo.chat.ChatModelVo;
 import org.ruoyi.common.chat.enums.RoleType;
 import org.ruoyi.common.chat.service.chat.IChatModelService;
 import org.ruoyi.common.core.utils.StringUtils;
+import org.ruoyi.common.core.domain.model.LoginUser;
+import org.ruoyi.common.core.exception.ServiceException;
+import org.ruoyi.domain.vo.chat.ChatSessionVo;
+import org.ruoyi.service.knowledge.KnowledgeBaseAccessService;
 import org.ruoyi.domain.vo.agent.AgentVo;
 import org.ruoyi.domain.vo.knowledge.KnowledgeInfoVo;
 import org.ruoyi.factory.ChatServiceFactory;
@@ -72,6 +76,7 @@ public class MpChatWebSocketHandler extends AbstractWebSocketHandler {
     private final IChatMessageService chatMessageService;
     private final ChatSessionOwnershipGuard chatSessionOwnershipGuard;
     private final ObjectMapper objectMapper;
+    private final KnowledgeBaseAccessService knowledgeAccess;
 
     @Value("${chat.default-model:}")
     private String defaultModel;
@@ -97,12 +102,20 @@ public class MpChatWebSocketHandler extends AbstractWebSocketHandler {
             return;
         }
 
-        Long userId = (Long) session.getAttributes().get(MpChatHandshakeInterceptor.USER_ID_KEY);
+        Object storedPrincipal = session.getAttributes().get(MpChatHandshakeInterceptor.LOGIN_USER_KEY);
+        LoginUser principal = storedPrincipal instanceof LoginUser authenticated ? authenticated : null;
+        if (principal == null || principal.getUserId() == null || principal.getUserId() <= 0
+            || StringUtils.isBlank(principal.getTenantId())) {
+            sendError(session, "错误:请先登录");
+            return;
+        }
+        Long userId = principal.getUserId();
         Long sessionId = parseLong(sessionIdRaw);
+        ChatSessionVo ownedSession;
 
         try {
-            chatSessionOwnershipGuard.requireOwned(userId, sessionId);
-        } catch (IllegalArgumentException unavailable) {
+            ownedSession = chatSessionOwnershipGuard.requireOwned(userId, sessionId, principal.getTenantId());
+        } catch (IllegalArgumentException | ServiceException unavailable) {
             sendError(session, "错误:对话会话不可用");
             return;
         }
@@ -115,6 +128,13 @@ public class MpChatWebSocketHandler extends AbstractWebSocketHandler {
                 if (agentId != null) {
                     agentVo = agentService.queryById(agentId);
                 }
+            }
+
+            // Resolve and authorize user-selected sources before model selection or retrieval.
+            if (agentVo == null) {
+                knowledgeId = knowledgeAccess.resolveForChat(ownedSession.getKnowledgeId(), knowledgeId, principal);
+            } else if (StringUtils.isNotBlank(knowledgeId)) {
+                knowledgeAccess.requireAccessible(knowledgeId, principal);
             }
 
             // 2. 解析模型：智能体绑定 > 前端传入 > 默认配置 > 表内首个 chat 模型
@@ -136,7 +156,11 @@ public class MpChatWebSocketHandler extends AbstractWebSocketHandler {
             // 3. 拼装最终输入：RAG 增强 + systemPrompt 前置
             String finalSystemPrompt = (agentVo != null && StringUtils.isNotBlank(agentVo.getSystemPrompt()))
                 ? agentVo.getSystemPrompt() : systemPrompt;
-            String augmentedContent = augmentWithKnowledge(content, agentVo, knowledgeId);
+            if ("learning".equals(ownedSession.getChatMode()) && StringUtils.isNotBlank(ownedSession.getLearningContext())) {
+                finalSystemPrompt = (StringUtils.isBlank(finalSystemPrompt) ? "" : finalSystemPrompt + "\n\n")
+                    + ownedSession.getLearningContext();
+            }
+            String augmentedContent = augmentWithKnowledge(content, agentVo, knowledgeId, principal);
             String finalContent = StringUtils.isNotBlank(finalSystemPrompt)
                 ? finalSystemPrompt + "\n\n" + augmentedContent : augmentedContent;
 
@@ -220,7 +244,7 @@ public class MpChatWebSocketHandler extends AbstractWebSocketHandler {
      * 智能体绑定知识库 / 前端传入 knowledgeId 时，对 content 做向量检索增强。
      * 复用 ChatServiceFacade.buildMultiKnowledgeAugmentor 的组装方式（简化为多库复合检索）。
      */
-    private String augmentWithKnowledge(String content, AgentVo agentVo, String knowledgeId) {
+    private String augmentWithKnowledge(String content, AgentVo agentVo, String knowledgeId, LoginUser principal) {
         List<Long> kids = new ArrayList<>();
         if (agentVo != null && agentVo.getKnowledgeIds() != null) {
             kids.addAll(agentVo.getKnowledgeIds());
@@ -228,17 +252,13 @@ public class MpChatWebSocketHandler extends AbstractWebSocketHandler {
         if (StringUtils.isBlank(knowledgeId) && kids.isEmpty()) {
             return content;
         }
-        if (StringUtils.isNotBlank(knowledgeId)) {
-            try {
-                kids.add(Long.valueOf(knowledgeId));
-            } catch (NumberFormatException ignored) {
-            }
-        }
+        Long requestKnowledgeId = StringUtils.isBlank(knowledgeId) ? null : Long.valueOf(knowledgeId);
+        if (requestKnowledgeId != null) kids.add(requestKnowledgeId);
         if (kids.isEmpty()) {
             return content;
         }
         try {
-            RetrievalAugmentor augmentor = buildMultiKnowledgeAugmentor(kids);
+            RetrievalAugmentor augmentor = buildMultiKnowledgeAugmentor(kids, requestKnowledgeId, principal);
             if (augmentor == null) {
                 return content;
             }
@@ -247,17 +267,22 @@ public class MpChatWebSocketHandler extends AbstractWebSocketHandler {
             AugmentationResult result = augmentor.augment(new AugmentationRequest(userMessage, metadata));
             ChatMessage augmented = result.chatMessage();
             return augmented instanceof UserMessage ? ((UserMessage) augmented).singleText() : content;
+        } catch (ServiceException | org.ruoyi.service.knowledge.KnowledgeBaseDisabledException denied) {
+            throw denied;
         } catch (Exception e) {
+            org.ruoyi.service.knowledge.KnowledgeBaseDisabledException.rethrowIfDisabled(e);
             log.warn("mp-chat RAG 增强失败，回退原文: {}", e.getMessage());
             return content;
         }
     }
 
-    private RetrievalAugmentor buildMultiKnowledgeAugmentor(List<Long> knowledgeIds) {
+    private RetrievalAugmentor buildMultiKnowledgeAugmentor(List<Long> knowledgeIds, Long requestKnowledgeId, LoginUser principal) {
         List<ContentRetriever> retrievers = new ArrayList<>();
         for (Long kid : knowledgeIds) {
             try {
-                KnowledgeInfoVo kb = knowledgeInfoService.queryById(kid);
+                KnowledgeInfoVo kb = kid.equals(requestKnowledgeId)
+                    ? knowledgeAccess.requireAccessible(String.valueOf(kid), principal)
+                    : knowledgeInfoService.queryById(kid);
                 if (kb == null) {
                     continue;
                 }
@@ -268,6 +293,8 @@ public class MpChatWebSocketHandler extends AbstractWebSocketHandler {
                 }
                 retrievers.add(new CustomVectorRetriever(knowledgeRetrievalService, kb, embModel));
             } catch (Exception e) {
+                org.ruoyi.service.knowledge.KnowledgeBaseDisabledException.rethrowIfDisabled(e);
+                if (kid.equals(requestKnowledgeId) && e instanceof ServiceException denied) throw denied;
                 log.warn("mp-chat 构建检索器失败: kid={}, err={}", kid, e.getMessage());
             }
         }
@@ -277,7 +304,7 @@ public class MpChatWebSocketHandler extends AbstractWebSocketHandler {
         ContentRetriever composite = retrievers.size() == 1
             ? retrievers.get(0)
             : new CompositeContentRetriever(retrievers);
-        return DefaultRetrievalAugmentor.builder().contentRetriever(composite).build();
+        return DefaultRetrievalAugmentor.builder().contentRetriever(composite).executor(Runnable::run).build();
     }
 
     /**

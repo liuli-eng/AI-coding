@@ -37,14 +37,19 @@ class LearningCourseServiceTest {
     private final CourseEnrollmentMapper enrollments = mock(CourseEnrollmentMapper.class);
     private final IChatSessionService sessions = mock(IChatSessionService.class);
     private final ChatSessionMapper sessionMapper = mock(ChatSessionMapper.class);
-    private final LearningCourseService service = new LearningCourseService(courses, enrollments, sessions, sessionMapper);
+    private final CourseMaterialService materials = mock(CourseMaterialService.class);
+    private org.mockito.MockedStatic<LoginHelper> login;
+    private org.mockito.MockedStatic<org.ruoyi.common.tenant.helper.TenantHelper> tenant;
+    @BeforeEach void identity(){login=mockStatic(LoginHelper.class);tenant=mockStatic(org.ruoyi.common.tenant.helper.TenantHelper.class);login.when(LoginHelper::getUserId).thenReturn(1L);login.when(LoginHelper::getTenantId).thenReturn("000000");tenant.when(org.ruoyi.common.tenant.helper.TenantHelper::getTenantId).thenReturn("000000");}
+    @AfterEach void closeIdentity(){tenant.close();login.close();}
+    private final LearningCourseService service = new LearningCourseService(courses, enrollments, sessions, sessionMapper, materials);
     private LearningCourse course() {
-        var c = new LearningCourse(); c.setId(10L); c.setTitle("Java 入门"); c.setDescription("从变量开始");
+        var c = new LearningCourse(); c.setTenantId("000000"); c.setId(10L); c.setTitle("Java 入门"); c.setDescription("从变量开始");
         c.setStatus("published"); c.setVersion(2);
         c.setChapters(JsonUtils.toJsonString(List.of(new CourseSave.Chapter("c1", "变量", "声明变量并观察值的变化。")))); return c;
     }
     private CourseEnrollment enrollment() {
-        var e = new CourseEnrollment(); e.setId(20L); e.setUserId(1L); e.setCourseId(10L);
+        var e = new CourseEnrollment(); e.setTenantId("000000"); e.setId(20L); e.setUserId(1L); e.setCourseId(10L);
         e.setTitle(course().getTitle()); e.setChapters(course().getChapters()); e.setCourseVersion(2);
         e.setCompletedChapters("[]"); e.setChapterSessions("{}"); e.setVersion(1); return e;
     }
@@ -53,16 +58,16 @@ class LearningCourseServiceTest {
         var duplicate = List.of(new CourseSave.Chapter("same", "一", "材料"), new CourseSave.Chapter("same", "二", "材料"));
         assertThrows(ServiceException.class, () -> service.save(null, new CourseSave("测试", "", "draft", duplicate, null)));
         when(courses.insert(any(LearningCourse.class))).thenAnswer(call -> {
-            LearningCourse c = call.getArgument(0); c.setId(10L);
+            LearningCourse c = call.getArgument(0); c.setTenantId("000000"); c.setId(10L);
             var chapters = LearningCourseService.chapters(c.getChapters());
             assertFalse(chapters.get(0).id().isBlank()); assertEquals(1, c.getVersion()); return 1;
         });
         assertEquals(10L, service.save(null, new CourseSave("测试", "", "published", List.of(new CourseSave.Chapter(null, "一", "材料")), null)));
     }
     @Test void joiningCopiesCourseVersionAndRepeatedJoinPreservesSnapshot() {
-        var c = course(); when(courses.selectById(10L)).thenReturn(c);
+        var c = course(); when(courses.selectOne(any(Wrapper.class))).thenReturn(c);
         when(enrollments.insert(any(CourseEnrollment.class))).thenAnswer(call -> {
-            CourseEnrollment e = call.getArgument(0); e.setId(20L);
+            CourseEnrollment e = call.getArgument(0); e.setTenantId("000000"); e.setId(20L);
             assertEquals(c.getChapters(), e.getChapters()); assertEquals(2, e.getCourseVersion());
             assertEquals(1L, e.getUserId()); return 1;
         });
@@ -74,7 +79,7 @@ class LearningCourseServiceTest {
         verify(enrollments, times(1)).insert(any(CourseEnrollment.class));
     }
     @Test void unpublishedCourseCannotBeJoinedAndConcurrentJoinReturnsExistingRecord() {
-        var c = course(); c.setStatus("draft"); when(courses.selectById(10L)).thenReturn(c);
+        var c = course(); c.setStatus("draft"); when(courses.selectOne(any(Wrapper.class))).thenReturn(c);
         assertThrows(ServiceException.class, () -> service.join(10L, 1L));
         c.setStatus("published");
         when(enrollments.selectOne(any(Wrapper.class))).thenReturn(null, enrollment());
@@ -106,8 +111,8 @@ class LearningCourseServiceTest {
         });
         when(enrollments.update(isNull(), any(Wrapper.class))).thenReturn(1);
         var started = service.startChapter(20L, "c1", 1L); assertTrue(started.created()); assertEquals("30", started.sessionId());
-        e.setChapterSessions("{\"c1\":\"30\"}"); var existing = new ChatSession(); existing.setId(30L); existing.setUserId(1L);
-        when(sessionMapper.selectById(30L)).thenReturn(existing);
+        e.setChapterSessions("{\"c1\":\"30\"}"); var existing = new ChatSession(); existing.setTenantId("000000"); existing.setId(30L); existing.setUserId(1L);
+        when(sessionMapper.selectOne(any(Wrapper.class))).thenAnswer(call->{Wrapper<?> query=call.getArgument(0);assertTrue(query.getSqlSegment().contains("tenant_id"));assertTrue(query.getSqlSegment().contains("user_id"));return existing;});
         assertFalse(service.startChapter(20L, "c1", 1L).created());
         verify(sessions, times(1)).insertByBo(any());
     }
@@ -124,8 +129,7 @@ class LearningCourseServiceTest {
     }
     @Test void joinControllerReturnsEnrollmentIdInData() {
         var mockService = mock(LearningCourseService.class); when(mockService.join(10L, 1L)).thenReturn(20L);
-        try (var login = mockStatic(LoginHelper.class)) {
-            login.when(LoginHelper::getUserId).thenReturn(1L);
+        {
             assertEquals("20", new MyLearningController(mockService).join(10L).getData());
         }
     }

@@ -93,6 +93,8 @@ export type SuccessMessageMode = ErrorMessageMode;
  */
 declare module 'axios' {
   interface AxiosRequestConfig {
+    /** Opt-in ownership/cancellation guard, checked before response side effects. */
+    isResponseCurrent?: () => boolean;
     /** 是否加密请求参数  */
     encrypt?: boolean;
     /**

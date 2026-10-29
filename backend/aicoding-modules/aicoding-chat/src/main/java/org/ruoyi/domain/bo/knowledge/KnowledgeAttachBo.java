@@ -25,11 +25,13 @@ public class KnowledgeAttachBo extends BaseEntity {
      */
     @NotNull(message = "主键不能为空", groups = { EditGroup.class })
     private Long id;
+    private Integer status;
+    private String businessState;
 
     /**
      * 知识库ID
      */
-    @NotBlank(message = "知识库ID不能为空", groups = { AddGroup.class, EditGroup.class })
+    @NotNull(message = "知识库ID不能为空", groups = { AddGroup.class, EditGroup.class })
     private Long knowledgeId;
 
 

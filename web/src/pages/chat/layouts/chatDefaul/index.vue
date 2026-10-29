@@ -5,14 +5,26 @@ import { EditPen, Reading, Warning } from '@element-plus/icons-vue';
 import { ref } from 'vue';
 import { getPrompts } from '@/api/prompt';
 import ChatSender from '@/components/ChatSender/index.vue';
+import KnowledgePicker from '@/components/KnowledgePicker/index.vue';
 import WelecomeText from '@/components/WelecomeText/index.vue';
 import { useUserStore } from '@/stores';
+import { useAgentStore } from '@/stores/modules/agent';
+import { useChatStore } from '@/stores/modules/chat';
 import { useSessionStore } from '@/stores/modules/session';
 
 const userStore = useUserStore();
 const sessionStore = useSessionStore();
+const chatStore = useChatStore();
+const agentStore = useAgentStore();
+const applicationMode = computed(() => !!chatStore.currentWorkflow || !!agentStore.currentAgentInfo.id);
+const creating = ref(false);
+const createError = ref('');
 
 const senderValue = ref('');
+watch(() => userStore.token, () => {
+  senderValue.value = '';
+  createError.value = '';
+});
 const senderRef = ref<InstanceType<typeof ChatSender> | null>(null);
 const mode = ref<'learning' | 'programming' | 'debugging'>('programming');
 
@@ -65,17 +77,26 @@ function selectMode(key: string) {
 }
 
 async function handleSubmit(content: string) {
-  localStorage.setItem('chatContent', content);
-
-  senderValue.value = '';
-  await sessionStore.createSessionList({
-    userId: userStore.userInfo?.userId as number,
-    sessionContent: content,
-    chatMode: mode.value,
-    promptId: promptId.value,
-    sessionTitle: content.slice(0, 10),
-    remark: content.slice(0, 10),
-  });
+  if (creating.value || !content.trim())
+    return;
+  creating.value = true;
+  createError.value = '';
+  try {
+    await sessionStore.createSessionList({
+      userId: userStore.userInfo?.userId as number,
+      sessionContent: content,
+      chatMode: mode.value,
+      promptId: applicationMode.value ? undefined : promptId.value,
+      knowledgeId: applicationMode.value ? undefined : chatStore.draftKnowledge?.id,
+      sessionTitle: content.slice(0, 10),
+      remark: content.slice(0, 10),
+    });
+    senderValue.value = '';
+  }
+  catch (error) {
+    createError.value = error instanceof Error && error.message === '知识库已停用' ? '知识库已停用，请更换知识库。问题已保留。' : '对话创建失败，问题和知识库选择已保留，请重试。';
+  }
+  finally { creating.value = false; }
 }
 </script>
 
@@ -99,7 +120,7 @@ async function handleSubmit(content: string) {
         <span class="mode-copy"><strong>{{ item.title }}</strong><small>{{ item.description }}</small></span>
       </button>
     </div>
-    <div v-if="userStore.token" class="prompt-picker">
+    <div v-if="userStore.token && !applicationMode" class="prompt-picker">
       <label for="chat-prompt">提示词模板</label>
       <el-select id="chat-prompt" v-model="promptId" clearable :loading="promptsLoading" placeholder="默认提示词" no-data-text="该模式暂无可用模板" aria-label="提示词模板">
         <el-option v-for="prompt in prompts" :key="prompt.id" :value="prompt.id" :label="prompt.name" />
@@ -113,9 +134,14 @@ async function handleSubmit(content: string) {
         </el-button>
       </p>
     </div>
+    <KnowledgePicker v-if="userStore.token && !applicationMode" />
+    <p v-if="createError" class="create-error" role="alert">
+      {{ createError }}
+    </p>
     <ChatSender
       ref="senderRef"
       v-model="senderValue"
+      :loading="creating"
       @submit="handleSubmit"
     />
   </div>
@@ -132,6 +158,7 @@ async function handleSubmit(content: string) {
   min-height: 450px;
 }
 
+.create-error { width: 100%; margin-bottom: 12px; color: var(--el-color-danger); font-size: 13px; line-height: 1.6; }
 .prompt-picker { width: 100%; margin-bottom: 16px; }
 .prompt-picker label { display: block; margin-bottom: 8px; font-size: 13px; }
 .prompt-picker p { margin-top: 8px; color: var(--el-text-color-secondary); font-size: 13px; }
