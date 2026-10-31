@@ -1,5 +1,6 @@
 /*
  AI 编程助手 全量初始化 SQL
+ 包含 2026-10-28 Phase 1 问答、Prompt、学习课程与菜单基础迁移，以及课程资料上传与快照、2026-10-29 知识库启停状态。
 */
 
 -- ============================================================
@@ -3914,6 +3915,274 @@ INSERT IGNORE INTO `sys_config` VALUES
 -- UPDATE `sys_config` SET `config_value` = 'true'
 -- WHERE `config_key` = 'sys.account.registerUser' AND `tenant_id` = '000000';
 
+-- BEGIN PHASE1 FOUNDATION RAG
+-- Phase 1 foundations for the existing question, prompt and learning entities.
+-- MySQL 8.0.16+; select the application database before running this script.
+-- Repeatable: preserves business data and menu customizations; merges recognized legacy menu duplicates.
+-- IDs use 2099102800000000xxx, separate from the 2099010100000000xxx registration range.
+SET NAMES utf8mb4;
+
+-- Stage menu definitions first, so a reserved-ID collision aborts BEFORE persistent changes.
+DROP TEMPORARY TABLE IF EXISTS `_phase1_menu_seed`;
+CREATE TEMPORARY TABLE `_phase1_menu_seed` LIKE `sys_menu`;
+INSERT INTO `_phase1_menu_seed`
+    (`menu_id`, `menu_name`, `parent_id`, `order_num`, `path`, `component`, `is_frame`, `is_cache`,
+     `menu_type`, `visible`, `status`, `perms`, `icon`, `create_dept`, `create_by`, `create_time`, `remark`)
+VALUES
+    (2099102800000000001, '问答记录', 2000209300188356609, 10, 'question', 'chat/question/index', 1, 0, 'C', '0', '0', 'chat:question:list', 'ant-design:message-outlined', 103, 1, '2026-10-28 00:00:00', 'Phase 1 问答记录'),
+    (2099102800000000002, '问答详情', 2099102800000000001, 1, '#', '', 1, 0, 'F', '0', '0', 'chat:question:query', '#', 103, 1, '2026-10-28 00:00:00', ''),
+    (2099102800000000003, '问答复核', 2099102800000000001, 2, '#', '', 1, 0, 'F', '0', '0', 'chat:question:review', '#', 103, 1, '2026-10-28 00:00:00', ''),
+    (2099102800000000010, '异常问题排查', 2000209300188356609, 11, 'exceptions', 'chat/question/exceptions', 1, 0, 'C', '0', '0', 'chat:question:list', 'ant-design:warning-outlined', 103, 1, '2026-10-28 00:00:00', '与问答记录共用列表、详情和复核权限'),
+    (2099102800000000020, 'Prompt 管理', 2000209300188356609, 12, 'prompt', 'chat/prompt/index', 1, 0, 'C', '0', '0', 'chat:prompt:list', 'ant-design:form-outlined', 103, 1, '2026-10-28 00:00:00', ''),
+    (2099102800000000021, 'Prompt 查询', 2099102800000000020, 1, '#', '', 1, 0, 'F', '0', '0', 'chat:prompt:query', '#', 103, 1, '2026-10-28 00:00:00', ''),
+    (2099102800000000022, 'Prompt 新增', 2099102800000000020, 2, '#', '', 1, 0, 'F', '0', '0', 'chat:prompt:add', '#', 103, 1, '2026-10-28 00:00:00', ''),
+    (2099102800000000023, 'Prompt 修改', 2099102800000000020, 3, '#', '', 1, 0, 'F', '0', '0', 'chat:prompt:edit', '#', 103, 1, '2026-10-28 00:00:00', ''),
+    (2099102800000000024, 'Prompt 删除', 2099102800000000020, 4, '#', '', 1, 0, 'F', '0', '0', 'chat:prompt:remove', '#', 103, 1, '2026-10-28 00:00:00', ''),
+    (2099102800000000030, '课程管理', 2000209300188356609, 13, 'course', 'learning/course/index', 1, 0, 'C', '0', '0', 'learning:course:list', 'ant-design:read-outlined', 103, 1, '2026-10-28 00:00:00', ''),
+    (2099102800000000031, '课程查询', 2099102800000000030, 1, '#', '', 1, 0, 'F', '0', '0', 'learning:course:query', '#', 103, 1, '2026-10-28 00:00:00', ''),
+    (2099102800000000032, '课程新增', 2099102800000000030, 2, '#', '', 1, 0, 'F', '0', '0', 'learning:course:add', '#', 103, 1, '2026-10-28 00:00:00', ''),
+    (2099102800000000033, '课程修改', 2099102800000000030, 3, '#', '', 1, 0, 'F', '0', '0', 'learning:course:edit', '#', 103, 1, '2026-10-28 00:00:00', ''),
+    (2099102800000000040, '业务数据总览', 2000209300188356609, 9, 'overview', 'dashboard/analytics/index', 1, 0, 'C', '0', '0', 'chat:overview:query', 'ant-design:bar-chart-outlined', 103, 1, '2026-10-28 00:00:00', '问答与知识库运行情况');
+
+DROP TEMPORARY TABLE IF EXISTS `_phase1_menu_preflight`;
+CREATE TEMPORARY TABLE `_phase1_menu_preflight` (
+    `collision_count` int NOT NULL,
+    CONSTRAINT `phase1_reserved_menu_id_collision` CHECK (`collision_count` = 0)
+);
+-- CHECK failure means an existing menu uses a reserved ID for a different purpose.
+-- Inspect those IDs and resolve the collision; do not run mysql with --force.
+INSERT INTO `_phase1_menu_preflight`
+SELECT COUNT(*) FROM `sys_menu` existing_menu
+JOIN `_phase1_menu_seed` seed ON seed.menu_id = existing_menu.menu_id
+WHERE NOT (existing_menu.perms <=> seed.perms)
+   OR NOT (existing_menu.parent_id <=> seed.parent_id)
+   OR NOT (existing_menu.menu_type <=> seed.menu_type);
+
+CREATE TABLE IF NOT EXISTS `chat_question` (
+    `id` bigint NOT NULL COMMENT '问答ID',
+    `tenant_id` varchar(20) NOT NULL DEFAULT '000000' COMMENT '租户编号',
+    `session_id` bigint NULL,
+    `user_id` bigint NOT NULL,
+    `user_name` varchar(100) NULL,
+    `model_name` varchar(255) NULL,
+    `chat_mode` varchar(32) NULL,
+    `question` longtext NULL,
+    `answer` longtext NULL,
+    `answer_status` varchar(32) NOT NULL DEFAULT 'running',
+    `retrieval_status` varchar(32) NOT NULL DEFAULT 'not_used',
+    `knowledge_names` longtext NULL COMMENT '知识库名称快照 JSON',
+    `citations` longtext NULL COMMENT '引用依据快照 JSON',
+    `trace_id` varchar(64) NULL,
+    `total_tokens` bigint NULL,
+    `duration_ms` bigint NULL,
+    `started_at` datetime(3) NULL,
+    `finished_at` datetime(3) NULL,
+    `error_message` text NULL,
+    `issue_type` varchar(32) NOT NULL DEFAULT 'none',
+    `review_status` varchar(32) NOT NULL DEFAULT 'none',
+    `review_note` text NULL,
+    `reviewed_by` bigint NULL,
+    `reviewed_at` datetime(3) NULL,
+    `version` int NOT NULL DEFAULT 0,
+    `create_dept` bigint NULL,
+    `create_by` bigint NULL,
+    `create_time` datetime NULL,
+    `update_by` bigint NULL,
+    `update_time` datetime NULL,
+    PRIMARY KEY (`id`),
+    KEY `idx_question_tenant_started` (`tenant_id`, `started_at`, `id`),
+    KEY `idx_question_tenant_user` (`tenant_id`, `user_id`, `id`),
+    KEY `idx_question_tenant_session` (`tenant_id`, `session_id`, `id`),
+    KEY `idx_question_tenant_answer` (`tenant_id`, `answer_status`, `started_at`, `id`),
+    KEY `idx_question_tenant_review` (`tenant_id`, `review_status`, `started_at`, `id`),
+    KEY `idx_question_tenant_retrieval` (`tenant_id`, `retrieval_status`, `started_at`, `id`),
+    KEY `idx_question_tenant_model` (`tenant_id`, `model_name`, `started_at`, `id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='问答与复核快照';
+
+CREATE TABLE IF NOT EXISTS `chat_prompt` (
+    `id` bigint NOT NULL,
+    `tenant_id` varchar(20) NOT NULL DEFAULT '000000',
+    `name` varchar(100) NOT NULL,
+    `description` varchar(500) NULL,
+    `chat_mode` varchar(32) NOT NULL,
+    `content` longtext NOT NULL,
+    `status` varchar(32) NOT NULL DEFAULT 'disabled',
+    `version` int NOT NULL DEFAULT 1,
+    `create_dept` bigint NULL,
+    `create_by` bigint NULL,
+    `create_time` datetime NULL,
+    `update_by` bigint NULL,
+    `update_time` datetime NULL,
+    PRIMARY KEY (`id`),
+    KEY `idx_prompt_tenant_id` (`tenant_id`, `id`),
+    KEY `idx_prompt_tenant_mode_status` (`tenant_id`, `chat_mode`, `status`, `id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Prompt 模板';
+
+CREATE TABLE IF NOT EXISTS `learning_course` (
+    `id` bigint NOT NULL,
+    `tenant_id` varchar(20) NOT NULL DEFAULT '000000',
+    `title` varchar(150) NOT NULL,
+    `description` varchar(2000) NULL,
+    `chapters` longtext NOT NULL COMMENT '课程章节 JSON',
+    `status` varchar(32) NOT NULL DEFAULT 'draft',
+    `version` int NOT NULL DEFAULT 1,
+    `create_dept` bigint NULL,
+    `create_by` bigint NULL,
+    `create_time` datetime NULL,
+    `update_by` bigint NULL,
+    `update_time` datetime NULL,
+    PRIMARY KEY (`id`),
+    KEY `idx_course_tenant_id` (`tenant_id`, `id`),
+    KEY `idx_course_tenant_status` (`tenant_id`, `status`, `id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='学习课程';
+
+CREATE TABLE IF NOT EXISTS `course_enrollment` (
+    `id` bigint NOT NULL,
+    `tenant_id` varchar(20) NOT NULL DEFAULT '000000',
+    `course_id` bigint NOT NULL,
+    `user_id` bigint NOT NULL,
+    `title` varchar(150) NOT NULL COMMENT '加入时课程标题快照',
+    `description` varchar(2000) NULL,
+    `chapters` longtext NOT NULL COMMENT '加入时课程章节快照 JSON',
+    `course_version` int NOT NULL DEFAULT 1,
+    `completed_chapters` longtext NULL COMMENT '已完成章节 JSON',
+    `chapter_sessions` longtext NULL COMMENT '章节与会话关联 JSON',
+    `version` int NOT NULL DEFAULT 1,
+    `create_dept` bigint NULL,
+    `create_by` bigint NULL,
+    `create_time` datetime NULL,
+    `update_by` bigint NULL,
+    `update_time` datetime NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_enrollment_tenant_user_course` (`tenant_id`, `user_id`, `course_id`),
+    KEY `idx_enrollment_tenant_user_id` (`tenant_id`, `user_id`, `id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='个人学习快照与进度';
+
+-- Add only absent session fields. Existing sessions retain NULL snapshots and knowledge IDs.
+SET @phase1_ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE `chat_session` ADD COLUMN `chat_mode` varchar(32) NULL COMMENT ''会话模式''', 'SELECT 1')
+    FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='chat_session' AND column_name='chat_mode');
+PREPARE phase1_stmt FROM @phase1_ddl;
+EXECUTE phase1_stmt;
+DEALLOCATE PREPARE phase1_stmt;
+
+SET @phase1_ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE `chat_session` ADD COLUMN `prompt_id` bigint NULL COMMENT ''Prompt 模板ID''', 'SELECT 1')
+    FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='chat_session' AND column_name='prompt_id');
+PREPARE phase1_stmt FROM @phase1_ddl;
+EXECUTE phase1_stmt;
+DEALLOCATE PREPARE phase1_stmt;
+
+SET @phase1_ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE `chat_session` ADD COLUMN `prompt_name` varchar(100) NULL COMMENT ''Prompt 名称快照''', 'SELECT 1')
+    FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='chat_session' AND column_name='prompt_name');
+PREPARE phase1_stmt FROM @phase1_ddl;
+EXECUTE phase1_stmt;
+DEALLOCATE PREPARE phase1_stmt;
+
+SET @phase1_ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE `chat_session` ADD COLUMN `prompt_version` int NULL COMMENT ''Prompt 版本快照''', 'SELECT 1')
+    FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='chat_session' AND column_name='prompt_version');
+PREPARE phase1_stmt FROM @phase1_ddl;
+EXECUTE phase1_stmt;
+DEALLOCATE PREPARE phase1_stmt;
+
+SET @phase1_ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE `chat_session` ADD COLUMN `prompt_snapshot` longtext NULL COMMENT ''Prompt 内容快照''', 'SELECT 1')
+    FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='chat_session' AND column_name='prompt_snapshot');
+PREPARE phase1_stmt FROM @phase1_ddl;
+EXECUTE phase1_stmt;
+DEALLOCATE PREPARE phase1_stmt;
+
+SET @phase1_ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE `chat_session` ADD COLUMN `learning_context` longtext NULL COMMENT ''学习材料快照''', 'SELECT 1')
+    FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='chat_session' AND column_name='learning_context');
+PREPARE phase1_stmt FROM @phase1_ddl;
+EXECUTE phase1_stmt;
+DEALLOCATE PREPARE phase1_stmt;
+
+SET @phase1_ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE `chat_session` ADD COLUMN `knowledge_id` varchar(64) NULL COMMENT ''选中的知识库ID''', 'SELECT 1')
+    FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='chat_session' AND column_name='knowledge_id');
+PREPARE phase1_stmt FROM @phase1_ddl;
+EXECUTE phase1_stmt;
+DEALLOCATE PREPARE phase1_stmt;
+
+SET @phase1_ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE `chat_session` ADD KEY `idx_session_tenant_user_id` (`tenant_id`, `user_id`, `id`)', 'SELECT 1')
+    FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='chat_session' AND index_name='idx_session_tenant_user_id');
+PREPARE phase1_stmt FROM @phase1_ddl;
+EXECUTE phase1_stmt;
+DEALLOCATE PREPARE phase1_stmt;
+
+-- Existing rows with these identities retain operator customizations.
+INSERT INTO `sys_menu`
+SELECT seed.* FROM `_phase1_menu_seed` seed
+LEFT JOIN `sys_menu` existing_menu ON existing_menu.menu_id=seed.menu_id
+WHERE existing_menu.menu_id IS NULL;
+
+-- Only active existing administrator roles receive administrative menus and their parent.
+-- No new access is added to ordinary users or custom roles.
+INSERT IGNORE INTO `sys_role_menu` (`role_id`, `menu_id`)
+SELECT r.role_id, m.menu_id FROM `sys_role` r CROSS JOIN `sys_menu` m
+WHERE r.role_key IN ('superadmin', 'admin') AND r.status='0' AND r.del_flag='0'
+  AND (m.menu_id=2000209300188356609 OR m.menu_id IN (SELECT menu_id FROM `_phase1_menu_seed`));
+
+-- Older installations may already have these pages under different IDs.
+-- Match the exact legacy identity AND the expected surviving identity before merging.
+-- Never delete a whole ID range: legacy menu IDs also occur independently in other tables.
+DROP TEMPORARY TABLE IF EXISTS `_phase1_menu_merge`;
+CREATE TEMPORARY TABLE `_phase1_menu_merge` (
+    `old_id` bigint NOT NULL PRIMARY KEY,
+    `new_id` bigint NOT NULL,
+    `old_parent` bigint NOT NULL,
+    `old_perms` varchar(100) NOT NULL
+);
+INSERT INTO `_phase1_menu_merge` VALUES
+    (2099010100000000026,2099102800000000001,2000209300188356609,'chat:question:list'),
+    (2099010100000000027,2099102800000000002,2099010100000000026,'chat:question:query'),
+    (2099010100000000028,2099102800000000003,2099010100000000026,'chat:question:review'),
+    (2099010100000000029,2099102800000000010,2000209300188356609,'chat:question:exceptions'),
+    (2099010100000000030,2099102800000000040,2000209300188356609,'chat:overview:query'),
+    (2099010100000000031,2099102800000000020,2000209300188356609,'chat:prompt:list'),
+    (2099010100000000032,2099102800000000021,2099010100000000031,'chat:prompt:query'),
+    (2099010100000000033,2099102800000000022,2099010100000000031,'chat:prompt:add'),
+    (2099010100000000034,2099102800000000023,2099010100000000031,'chat:prompt:edit'),
+    (2099010100000000035,2099102800000000024,2099010100000000031,'chat:prompt:remove'),
+    (2099010100000000036,2099102800000000030,2000209300188356609,'learning:course:list'),
+    (2099010100000000037,2099102800000000031,2099010100000000036,'learning:course:query'),
+    (2099010100000000038,2099102800000000032,2099010100000000036,'learning:course:add'),
+    (2099010100000000039,2099102800000000033,2099010100000000036,'learning:course:edit');
+
+START TRANSACTION;
+DELETE mapping FROM `_phase1_menu_merge` mapping
+LEFT JOIN `_phase1_menu_seed` seed ON seed.menu_id=mapping.new_id
+LEFT JOIN `sys_menu` legacy ON legacy.menu_id=mapping.old_id
+    AND legacy.parent_id=mapping.old_parent
+    AND CAST(legacy.perms AS BINARY)=CAST(mapping.old_perms AS BINARY)
+    AND legacy.menu_type=seed.menu_type AND legacy.component <=> seed.component
+LEFT JOIN `sys_menu` surviving ON surviving.menu_id=mapping.new_id
+    AND surviving.parent_id=seed.parent_id AND surviving.perms=seed.perms
+    AND surviving.menu_type=seed.menu_type AND surviving.component <=> seed.component
+WHERE legacy.menu_id IS NULL OR surviving.menu_id IS NULL;
+
+-- Preserve each role's access and any custom children before deleting duplicate rows.
+INSERT IGNORE INTO `sys_role_menu` (`role_id`,`menu_id`)
+SELECT grants.role_id,mapping.new_id FROM `sys_role_menu` grants
+JOIN `_phase1_menu_merge` mapping ON mapping.old_id=grants.menu_id;
+UPDATE `sys_menu` child JOIN `_phase1_menu_merge` mapping ON mapping.old_id=child.parent_id
+SET child.parent_id=mapping.new_id;
+DELETE grants FROM `sys_role_menu` grants
+JOIN `_phase1_menu_merge` mapping ON mapping.old_id=grants.menu_id;
+DELETE legacy FROM `sys_menu` legacy
+JOIN `_phase1_menu_merge` mapping ON mapping.old_id=legacy.menu_id;
+COMMIT;
+
+DROP TEMPORARY TABLE `_phase1_menu_merge`;
+DROP TEMPORARY TABLE `_phase1_menu_preflight`;
+DROP TEMPORARY TABLE `_phase1_menu_seed`;
+-- END PHASE1 FOUNDATION RAG
+
 -- ============================================================
 -- 第四部分：snail_job 任务调度库（独立数据库）
 -- 来源：snail_job_mysql.sql
@@ -3923,6 +4192,98 @@ SET NAMES utf8mb4;
 
 DROP DATABASE IF EXISTS snail_job;
 CREATE DATABASE snail_job;
+-- BEGIN COURSE MATERIALS
+-- Course materials; run in the existing application database AFTER Phase 1 foundation.
+-- Additive and repeatable: no business data, menus, grants or historical NULL snapshots are rewritten.
+CREATE TABLE IF NOT EXISTS `learning_course_material` (
+    `id` bigint NOT NULL,
+    `tenant_id` varchar(20) NOT NULL DEFAULT '000000',
+    `oss_id` bigint NOT NULL,
+    `name` varchar(255) NOT NULL,
+    `size` bigint NOT NULL,
+    `suffix` varchar(10) NOT NULL,
+    `text_content` longtext NOT NULL,
+    `create_dept` bigint DEFAULT NULL,
+    `create_by` bigint DEFAULT NULL,
+    `create_time` datetime DEFAULT NULL,
+    `update_by` bigint DEFAULT NULL,
+    `update_time` datetime DEFAULT NULL,
+    PRIMARY KEY (`id`),
+    KEY `idx_course_material_tenant_owner` (`tenant_id`, `create_by`, `id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Immutable course documents';
+
+SET @course_material_ddl = (SELECT IF(COUNT(*)=0,
+    'ALTER TABLE `learning_course` ADD COLUMN `material_ids` longtext NULL COMMENT ''Immutable material ID snapshot''', 'SELECT 1')
+    FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='learning_course' AND column_name='material_ids');
+PREPARE course_material_statement FROM @course_material_ddl;
+EXECUTE course_material_statement;
+DEALLOCATE PREPARE course_material_statement;
+
+SET @course_material_ddl = (SELECT IF(COUNT(*)=0,
+    'ALTER TABLE `course_enrollment` ADD COLUMN `material_ids` longtext NULL COMMENT ''Immutable material ID snapshot''', 'SELECT 1')
+    FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='course_enrollment' AND column_name='material_ids');
+PREPARE course_material_statement FROM @course_material_ddl;
+EXECUTE course_material_statement;
+DEALLOCATE PREPARE course_material_statement;
+
+SET @course_material_ddl = (SELECT IF(COUNT(*)=0,
+    'ALTER TABLE `chat_session` ADD COLUMN `course_material_ids` longtext NULL COMMENT ''Immutable material ID snapshot''', 'SELECT 1')
+    FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='chat_session' AND column_name='course_material_ids');
+PREPARE course_material_statement FROM @course_material_ddl;
+EXECUTE course_material_statement;
+DEALLOCATE PREPARE course_material_statement;
+
+-- END COURSE MATERIALS
+
+-- BEGIN KNOWLEDGE STATUS
+-- Existing knowledge bases remain enabled. Re-running preserves administrator choices.
+SET @knowledge_status_ddl = (SELECT IF(COUNT(*)=0,
+    'ALTER TABLE `knowledge_info` ADD COLUMN `status` char(1) NOT NULL DEFAULT ''0'' COMMENT ''0 enabled, 1 disabled''', 'SELECT 1')
+    FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='knowledge_info' AND column_name='status');
+PREPARE knowledge_status_statement FROM @knowledge_status_ddl;
+EXECUTE knowledge_status_statement;
+DEALLOCATE PREPARE knowledge_status_statement;
+-- END KNOWLEDGE STATUS
+
+-- BEGIN SETTINGS DOCUMENTS
+-- Knowledge document settings are independent per tenant; existing files remain enabled.
+CREATE TABLE IF NOT EXISTS knowledge_settings (
+ tenant_id varchar(20) NOT NULL,
+ system_name varchar(100) NOT NULL,
+ allowed_types varchar(1024) NOT NULL,
+ overwrite_same_name tinyint NOT NULL DEFAULT 0,
+ failure_message varchar(255) NOT NULL,
+ similarity_threshold decimal(4,3) NOT NULL DEFAULT 0.500,
+ version int NOT NULL DEFAULT 0,
+ update_by bigint DEFAULT NULL,
+ update_time datetime DEFAULT NULL,
+ PRIMARY KEY(tenant_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+SET @settings_ddl=(SELECT IF(COUNT(*)=0,'ALTER TABLE knowledge_attach ADD COLUMN file_size bigint DEFAULT NULL COMMENT ''Bytes; NULL for historical files''','SELECT 1') FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='knowledge_attach' AND column_name='file_size');
+PREPARE settings_stmt FROM @settings_ddl; EXECUTE settings_stmt; DEALLOCATE PREPARE settings_stmt;
+SET @settings_ddl=(SELECT IF(COUNT(*)=0,'ALTER TABLE knowledge_attach ADD COLUMN business_state char(1) NOT NULL DEFAULT ''0'' COMMENT ''0 enabled, 1 disabled''','SELECT 1') FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='knowledge_attach' AND column_name='business_state');
+PREPARE settings_stmt FROM @settings_ddl; EXECUTE settings_stmt; DEALLOCATE PREPARE settings_stmt;
+SET @settings_ddl=(SELECT IF(COUNT(*)=0,'ALTER TABLE knowledge_attach ADD INDEX idx_document_workbench(tenant_id,knowledge_id,status,create_time,id)','SELECT 1') FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='knowledge_attach' AND index_name='idx_document_workbench');
+PREPARE settings_stmt FROM @settings_ddl; EXECUTE settings_stmt; DEALLOCATE PREPARE settings_stmt;
+
+-- Keep existing attachment menu and customized permissions; identify new pages by component.
+SET @document_parent=COALESCE((SELECT parent_id FROM sys_menu WHERE component='knowledge/attach/index' ORDER BY menu_id LIMIT 1),2000209300188356609);
+INSERT INTO sys_menu(menu_id,menu_name,parent_id,order_num,path,component,is_frame,is_cache,menu_type,visible,status,perms,icon,create_by,create_time)
+SELECT 2099102900000000101,'系统设置',@document_parent,10,'knowledge-settings','knowledge/settings/index',1,1,'C','0','0','knowledge:settings:query','ant-design:setting-outlined',1,NOW()
+WHERE NOT EXISTS(SELECT 1 FROM sys_menu WHERE component='knowledge/settings/index' OR menu_id=2099102900000000101);
+SET @knowledge_settings_menu=(SELECT menu_id FROM sys_menu WHERE component='knowledge/settings/index' ORDER BY menu_id LIMIT 1);
+INSERT INTO sys_menu(menu_id,menu_name,parent_id,order_num,path,menu_type,visible,status,perms,create_by,create_time)
+SELECT 2099102900000000102,'保存知识库设置',@knowledge_settings_menu,1,'#','F','0','0','knowledge:settings:edit',1,NOW()
+WHERE @knowledge_settings_menu IS NOT NULL AND NOT EXISTS(SELECT 1 FROM sys_menu WHERE perms='knowledge:settings:edit' OR menu_id=2099102900000000102);
+INSERT INTO sys_menu(menu_id,menu_name,parent_id,order_num,path,component,is_frame,is_cache,menu_type,visible,status,perms,icon,create_by,create_time)
+SELECT 2099102900000000103,'上传文档',@document_parent,8,'document-upload','knowledge/attach/upload',1,1,'C','0','0','system:attach:add','ant-design:cloud-upload-outlined',1,NOW()
+WHERE NOT EXISTS(SELECT 1 FROM sys_menu WHERE component='knowledge/attach/upload' OR menu_id=2099102900000000103);
+INSERT INTO sys_role_menu(role_id,menu_id)
+SELECT r.role_id,m.menu_id FROM sys_role r JOIN sys_menu m ON(m.component IN('knowledge/settings/index','knowledge/attach/upload') OR m.perms='knowledge:settings:edit')
+WHERE r.role_key IN('superadmin','admin') AND r.status='0' AND r.del_flag='0'
+AND NOT EXISTS(SELECT 1 FROM sys_role_menu rm WHERE rm.role_id=r.role_id AND rm.menu_id=m.menu_id);
+-- END SETTINGS DOCUMENTS
+
 USE snail_job;
 
 CREATE TABLE `sj_namespace`

@@ -1,18 +1,20 @@
-import type { AttachVO, AttachForm, AttachQuery } from './model';
+import type { AttachForm, AttachQuery, AttachVO } from './model';
 
-import type { ID, IDS } from '#/api/common';
-import type { PageResult } from '#/api/common';
+import type { ID, IDS, PageResult } from '#/api/common';
 
 import { commonExport } from '#/api/helper';
+import { documentRequestOptions } from '#/api/knowledge/settings';
 import { requestClient } from '#/api/request';
 
 /**
-* 查询知识库附件列表
-* @param params
-* @returns 知识库附件列表
-*/
+ * 查询知识库附件列表
+ * @param params
+ * @returns 知识库附件列表
+ */
 export function attachList(params?: AttachQuery) {
-  return requestClient.get<PageResult<AttachVO>>('/system/attach/list', { params });
+  return requestClient.get<PageResult<AttachVO>>('/system/attach/list', {
+    params,
+  });
 }
 
 /**
@@ -56,16 +58,23 @@ export function attachUpdate(data: AttachForm) {
  * @param id id
  * @returns void
  */
-export function attachRemove(id: ID | IDS) {
-  return requestClient.deleteWithMsg<void>(`/system/attach/${id}`);
+export function attachRemove(id: ID | IDS, signal?: AbortSignal) {
+  return requestClient.deleteWithMsg<void>(
+    `/system/attach/${id}`,
+    documentRequestOptions(signal),
+  );
 }
 
 /**
  * 手动解析附件内容
  * @param id id
  */
-export function attachParse(id: ID) {
-  return requestClient.postWithMsg<void>(`/system/attach/parse/${id}`);
+export function attachParse(id: ID, signal?: AbortSignal) {
+  return requestClient.postWithMsg<void>(
+    `/system/attach/parse/${id}`,
+    undefined,
+    documentRequestOptions(signal),
+  );
 }
 
 export interface KnowledgeReparseResult {
@@ -74,8 +83,10 @@ export interface KnowledgeReparseResult {
   total: number;
 }
 
-export function attachReparseKnowledge(knowledgeId: ID) {
+export function attachReparseKnowledge(knowledgeId: ID, signal?: AbortSignal) {
   return requestClient.post<KnowledgeReparseResult>(
     `/system/attach/reparse/knowledge/${knowledgeId}`,
+    undefined,
+    documentRequestOptions(signal),
   );
 }

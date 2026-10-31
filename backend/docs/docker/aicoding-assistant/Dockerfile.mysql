@@ -7,8 +7,8 @@ ENV TZ=Asia/Shanghai
 
 # MySQL 官方入口会按文件名顺序执行初始化目录中的 SQL。
 # 主库统一为 aicoding-assistant，与初始化 SQL 和 Compose 中的数据库配置保持一致。
-COPY docs/script/sql/aicoding-assistant.sql /docker-entrypoint-initdb.d/01-aicoding-assistant.sql
-COPY docs/script/sql/snail_job_mysql.sql /docker-entrypoint-initdb.d/02-snail-job.sql
+# 全量脚本已包含 snail_job；不要再次运行独立调度库脚本。
+COPY docs/script/sql/ruoyi-ai.sql /docker-entrypoint-initdb.d/01-aicoding-assistant.sql
 
 # MySQL启动参数
 CMD ["--default-authentication-plugin=mysql_native_password", \

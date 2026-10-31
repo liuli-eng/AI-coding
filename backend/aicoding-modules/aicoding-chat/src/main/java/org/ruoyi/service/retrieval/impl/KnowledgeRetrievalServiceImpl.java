@@ -49,6 +49,8 @@ public class KnowledgeRetrievalServiceImpl implements KnowledgeRetrievalService 
     private final KnowledgeFragmentMapper fragmentMapper;
     private final TraceRecordService traceRecordService;
     private final TraceProperties traceProperties;
+    private final org.ruoyi.service.knowledge.KnowledgeStatusService knowledgeStatus;
+    private final org.ruoyi.service.knowledge.KnowledgeDocumentAvailability documents;
 
     /**
      * 粗召回默认扩大倍数
@@ -69,10 +71,11 @@ public class KnowledgeRetrievalServiceImpl implements KnowledgeRetrievalService 
 
     @Override
     public List<KnowledgeRetrievalVo> retrieve(QueryVectorBo queryVectorBo) {
+        knowledgeStatus.requireEnabled(queryVectorBo.getKid());
         String cacheKey = cacheKey(queryVectorBo);
         CacheEntry cached = retrievalCache.get(cacheKey);
         if (cached != null && System.currentTimeMillis() - cached.createdAt < CACHE_TTL_MILLIS) {
-            return copyResults(cached.results);
+            return copyResults(documents.filter(queryVectorBo.getKid(), cached.results));
         }
         log.info("开始知识库检索, kid={}, query={}", queryVectorBo.getKid(), queryVectorBo.getQuery());
 
@@ -84,6 +87,8 @@ public class KnowledgeRetrievalServiceImpl implements KnowledgeRetrievalService 
                 retrievalInputPayload,
                 () -> retrieveUncached(queryVectorBo),
                 RagTracePayloadBuilder::retrievalOutputSummary);
+        knowledgeStatus.requireEnabled(queryVectorBo.getKid());
+        finalResults = documents.filter(queryVectorBo.getKid(), finalResults);
         cache(cacheKey, finalResults);
         return copyResults(finalResults);
     }

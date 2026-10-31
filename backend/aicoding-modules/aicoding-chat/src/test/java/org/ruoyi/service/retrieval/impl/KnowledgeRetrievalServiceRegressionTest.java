@@ -24,7 +24,7 @@ class KnowledgeRetrievalServiceRegressionTest {
     void rrfMergesSameStableIdAndKeepsDistinctItems() throws Exception {
         KnowledgeRetrievalServiceImpl service = new KnowledgeRetrievalServiceImpl(
             mock(VectorStoreService.class), mock(RerankModelFactory.class), mock(KnowledgeFragmentMapper.class),
-            mock(TraceRecordService.class), new TraceProperties());
+            mock(TraceRecordService.class), new TraceProperties(), mock(org.ruoyi.service.knowledge.KnowledgeStatusService.class), documents());
         KnowledgeRetrievalVo vectorA = item("fid-a", "A", 0.9);
         KnowledgeRetrievalVo vectorB = item("fid-b", "B", 0.8);
         KnowledgeRetrievalVo keywordA = item("fid-a", "A", 10.0);
@@ -48,7 +48,7 @@ class KnowledgeRetrievalServiceRegressionTest {
         when(vectorStore.search(org.mockito.ArgumentMatchers.any())).thenReturn(List.of(item("fid-a", "A", 0.75)));
         KnowledgeRetrievalServiceImpl service = new KnowledgeRetrievalServiceImpl(
             vectorStore, mock(RerankModelFactory.class), mock(KnowledgeFragmentMapper.class),
-            mock(TraceRecordService.class), new TraceProperties());
+            mock(TraceRecordService.class), new TraceProperties(), mock(org.ruoyi.service.knowledge.KnowledgeStatusService.class), documents());
         QueryVectorBo query = new QueryVectorBo();
         query.setKid("1");
         query.setQuery("test");
@@ -64,6 +64,10 @@ class KnowledgeRetrievalServiceRegressionTest {
         assertEquals("fid-a", result.get(0).getId());
     }
 
+    private static org.ruoyi.service.knowledge.KnowledgeDocumentAvailability documents(){
+        var guard=mock(org.ruoyi.service.knowledge.KnowledgeDocumentAvailability.class);
+        when(guard.filter(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyList())).thenAnswer(call->call.getArgument(1));return guard;
+    }
     private static KnowledgeRetrievalVo item(String id, String content, double score) {
         return KnowledgeRetrievalVo.builder().id(id).content(content).score(score).build();
     }

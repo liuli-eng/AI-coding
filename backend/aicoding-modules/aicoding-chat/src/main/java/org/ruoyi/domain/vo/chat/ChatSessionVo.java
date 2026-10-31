@@ -36,6 +36,9 @@ public class ChatSessionVo implements Serializable {
     @ExcelProperty(value = "用户id")
     private Long userId;
 
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    private String courseMaterialIds;
+
     /**
      * 会话标题
      */
@@ -44,6 +47,9 @@ public class ChatSessionVo implements Serializable {
 
     /** Persisted teaching/programming/debugging policy. */
     private String chatMode;
+
+    /** Optional ordinary-chat knowledge source, stored as a string to preserve ID precision. */
+    private String knowledgeId;
 
     private Long promptId;
     private String promptName;

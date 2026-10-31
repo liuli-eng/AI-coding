@@ -131,6 +131,8 @@ public class ChatServiceFacade implements IChatService {
 
     private final org.ruoyi.service.chat.ChatQuestionService questionService;
 
+    private final org.ruoyi.service.knowledge.KnowledgeBaseAccessService knowledgeAccess;
+
     /**
      * 内存实例缓存，避免同一会话重复创建
      * Key: sessionId, Value: MessageWindowChatMemory实例
@@ -159,6 +161,11 @@ public class ChatServiceFacade implements IChatService {
             throw new IllegalArgumentException("对话模式参数冲突：工作流和智能体不能同时启用");
         }
 
+        if (!workflowMode && !agentMode &&
+            (StringUtils.isNotBlank(ownedSession.getKnowledgeId()) || StringUtils.isNotBlank(chatRequest.getKnowledgeId()))) {
+            chatRequest.setKnowledgeId(knowledgeAccess.resolveForChat(ownedSession.getKnowledgeId(), chatRequest.getKnowledgeId()));
+        }
+
         // 工作流模式。工作流引擎负责创建并持有自己的 SSE，必须在普通聊天连接创建前路由。
         if (workflowMode) {
             chatMessageService.saveChatMessage(
@@ -180,6 +187,9 @@ public class ChatServiceFacade implements IChatService {
             }
             if (!"0".equals(agentVo.getStatus())) {
                 throw new IllegalArgumentException("智能体已停用");
+            }
+            if (usesRequestKnowledge(agentVo) && StringUtils.isNotBlank(chatRequest.getKnowledgeId())) {
+                knowledgeAccess.requireAccessible(chatRequest.getKnowledgeId());
             }
             if (agentVo != null && agentVo.getModelId() != null) {
                 ChatModelVo agentModel = chatModelService.queryById(agentVo.getModelId());
@@ -565,7 +575,7 @@ public class ChatServiceFacade implements IChatService {
             return content;
         }
         try {
-            RetrievalAugmentor augmentor = buildMultiKnowledgeAugmentor(knowledgeIds, traceRun);
+            RetrievalAugmentor augmentor = buildMultiKnowledgeAugmentor(knowledgeIds, traceRun, usesRequestKnowledge(agentVo));
             if (augmentor == null) {
                 if (traceRun != null) traceRun.question.setRetrievalStatus("failed");
                 return content;
@@ -576,7 +586,11 @@ public class ChatServiceFacade implements IChatService {
             ChatMessage augmented = result.chatMessage();
             return augmented instanceof UserMessage ? ((UserMessage) augmented).singleText() : content;
         } catch (Exception e) {
+            org.ruoyi.service.knowledge.KnowledgeBaseDisabledException.rethrowIfDisabled(e);
             if (traceRun != null) traceRun.question.setRetrievalStatus("failed");
+            if (usesRequestKnowledge(agentVo) && e instanceof org.ruoyi.common.core.exception.ServiceException denied) {
+                throw denied;
+            }
             log.warn("chat_rag operation=AUGMENT status=FALLBACK errorType={}", errorType(e));
             return content;
         }
@@ -734,8 +748,12 @@ public class ChatServiceFacade implements IChatService {
     /**
      * 汇总本次对话要检索的知识库ID列表：智能体绑定的 knowledgeIds 优先，回退到请求的 knowledgeId
      */
+    private boolean usesRequestKnowledge(AgentVo agentVo) {
+        return agentVo == null || agentVo.getKnowledgeIds() == null || agentVo.getKnowledgeIds().isEmpty();
+    }
+
     private List<Long> collectKnowledgeIds(ChatRequest chatRequest, AgentVo agentVo) {
-        if (agentVo != null && agentVo.getKnowledgeIds() != null && !agentVo.getKnowledgeIds().isEmpty()) {
+        if (!usesRequestKnowledge(agentVo)) {
             return agentVo.getKnowledgeIds();
         }
         if (StringUtils.isNotBlank(chatRequest.getKnowledgeId())) {
@@ -752,7 +770,7 @@ public class ChatServiceFacade implements IChatService {
      * 单知识库直接用 DefaultRetrievalAugmentor + CustomVectorRetriever；
      * 多知识库用一个复合 ContentRetriever 合并各库检索结果。
      */
-    private RetrievalAugmentor buildMultiKnowledgeAugmentor(List<Long> knowledgeIds, TraceRunHandle traceRun) {
+    private RetrievalAugmentor buildMultiKnowledgeAugmentor(List<Long> knowledgeIds, TraceRunHandle traceRun, boolean guardedRequestSource) {
         if (knowledgeIds == null || knowledgeIds.isEmpty()) {
             return null;
         }
@@ -760,7 +778,7 @@ public class ChatServiceFacade implements IChatService {
         List<String> knowledgeNames = new ArrayList<>();
         for (Long kid : knowledgeIds) {
             try {
-                KnowledgeInfoVo kb = knowledgeInfoService.queryById(kid);
+                KnowledgeInfoVo kb = guardedRequestSource ? knowledgeAccess.requireAccessible(String.valueOf(kid)) : knowledgeInfoService.queryById(kid);
                 if (kb == null) throw new IllegalStateException("Knowledge base unavailable");
                 ChatModelVo embModel = chatModelService.selectModelByName(kb.getEmbeddingModel());
                 if (embModel == null) {
@@ -769,6 +787,10 @@ public class ChatServiceFacade implements IChatService {
                 knowledgeNames.add(kb.getName());
                 retrievers.add(new CustomVectorRetriever(knowledgeRetrievalService, kb, embModel));
             } catch (Exception e) {
+                org.ruoyi.service.knowledge.KnowledgeBaseDisabledException.rethrowIfDisabled(e);
+                if (guardedRequestSource && e instanceof org.ruoyi.common.core.exception.ServiceException denied) {
+                    throw denied;
+                }
                 throw new IllegalStateException("Knowledge retriever configuration failed", e);
             }
         }

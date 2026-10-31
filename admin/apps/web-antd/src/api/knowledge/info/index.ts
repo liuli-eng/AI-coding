@@ -7,10 +7,10 @@ import { commonExport } from '#/api/helper';
 import { requestClient } from '#/api/request';
 
 /**
-* 查询知识库列表
-* @param params
-* @returns 知识库列表
-*/
+ * 查询知识库列表
+ * @param params
+ * @returns 知识库列表
+ */
 export function infoList(params?: InfoQuery) {
   return requestClient.get<PageResult<InfoVO>>('/system/info/list', { params });
 }
@@ -68,3 +68,10 @@ export function infoRemove(id: ID | IDS) {
 export function knowledgeRetrieval(data: any) {
   return requestClient.post<any[]>('/system/fragment/retrieval', data);
 }
+
+/** 启用或停用知识库，保留文档和检索数据。 */
+export function infoStatusChange(id: ID, status: InfoVO['status']) {
+  return requestClient.put<void>(`/system/info/${id}/status`, { status });
+}
+
+export const knowledgeDefaults = () => requestClient.get<{similarityThreshold: number}>('/system/info/defaults');

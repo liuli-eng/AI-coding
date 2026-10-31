@@ -26,7 +26,7 @@ class ChatPromptSnapshotTest {
     }
     @Test void templateContentsAreCopiedOnceAndCannotBeChangedOnExistingSession() {
         var mapper = mock(ChatSessionMapper.class); var prompts = mock(ChatPromptService.class);
-        var service = new ChatSessionServiceImpl(mapper, prompts);
+        var service = new ChatSessionServiceImpl(mapper, prompts, mock(org.ruoyi.service.knowledge.KnowledgeBaseAccessService.class));
         var p = new ChatPrompt(); p.setId(12L); p.setName("排错指导"); p.setContent("原始指导"); p.setVersion(3);
         when(prompts.resolve(12L, "debugging")).thenReturn(p);
         var bo = new ChatSessionBo(); bo.setChatMode("debugging"); bo.setPromptId(12L);

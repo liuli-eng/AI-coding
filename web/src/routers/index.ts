@@ -4,6 +4,7 @@ import { createRouter, createWebHistory } from 'vue-router';
 import { ROUTER_WHITE_LIST } from '@/config';
 import { errorRouter, layoutRouter, staticRouter } from '@/routers/modules/staticRouter';
 import { useUserStore } from '@/stores';
+import { systemName } from '@/stores/modules/application';
 
 const { start, done } = useNProgress(0, {
   showSpinner: false,
@@ -33,7 +34,7 @@ router.beforeEach(
     start();
 
     // 2、标题
-    document.title = (to.meta.title as string) || (import.meta.env.VITE_WEB_TITLE as string);
+    document.title = to.meta.title ? `${to.meta.title} · ${systemName.value}` : systemName.value;
 
     // 3、权限 预留
     // 3、判断是访问登陆页，有Token访问当前页面，token过期访问接口，axios封装则自动跳转登录页面，没有Token重置路由到登陆页。

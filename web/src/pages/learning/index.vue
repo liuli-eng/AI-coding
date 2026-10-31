@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import type { Course, Enrollment, Learning } from '@/api/learning';
 import type { ChatSessionVo } from '@/api/session/types';
-import { onMounted, ref, watch } from 'vue';
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import {
   courses,
+  downloadLearningMaterial,
   joinCourse,
   learningDetail,
   myCourses,
@@ -12,6 +13,7 @@ import {
   startChapter,
 } from '@/api/learning';
 import { get_session } from '@/api/session';
+import CourseMaterials from '@/components/CourseMaterials/index.vue';
 import { useAgentStore } from '@/stores/modules/agent';
 import { useChatStore } from '@/stores/modules/chat';
 import { useSessionStore } from '@/stores/modules/session';
@@ -74,7 +76,10 @@ function search() {
   load();
 }
 watch([tab, () => user.token], search);
-onMounted(load);
+onMounted(() => {
+  window.addEventListener('focus', refresh);
+  load();
+});
 const open = ref(false);
 const detail = ref<Learning>();
 const detailLoading = ref(false);
@@ -82,13 +87,25 @@ const detailError = ref('');
 const action = ref('');
 const selectedChapter = ref('');
 let detailSequence = 0;
+onBeforeUnmount(() => {
+  window.removeEventListener('focus', refresh);
+  sequence++;
+  detailSequence++;
+});
 watch(() => user.token, () => {
   detailSequence++;
+  action.value = '';
   open.value = false;
   detail.value = undefined;
 });
-async function show(id: string) {
+function refresh() {
+  load();
+  if (open.value && detail.value && !action.value)
+    show(detail.value.id, selectedChapter.value);
+}
+async function show(id: string, preferredChapter = '') {
   const current = ++detailSequence;
+  action.value = '';
   open.value = true;
   detail.value = undefined;
   detailError.value = '';
@@ -100,7 +117,8 @@ async function show(id: string) {
     const record = result.data;
     detail.value = record;
     selectedChapter.value
-      = record.chapters.find(c => !record.completedChapters.includes(c.id))?.id
+      = record.chapters.find(c => c.id === preferredChapter)?.id
+        || record.chapters.find(c => !record.completedChapters.includes(c.id))?.id
         || record.chapters[0]?.id
         || '';
   }
@@ -151,24 +169,38 @@ async function progress(chapterId: string) {
 async function study(chapterId: string) {
   if (!detail.value || action.value)
     return;
+  const requestToken = user.token;
+  const generation = sessionStore.getConversationGeneration();
+  const current = detailSequence;
+  const ownsRequest = () => requestToken === user.token
+    && generation === sessionStore.getConversationGeneration()
+    && current === detailSequence;
   action.value = chapterId;
   detailError.value = '';
   try {
     const result = await startChapter(detail.value.id, chapterId);
+    if (!ownsRequest())
+      return;
     const session = await readApiResult<ChatSessionVo>(get_session(result.data.sessionId));
+    if (!ownsRequest())
+      return;
+    await sessionStore.requestSessionList(1, true);
+    if (!ownsRequest())
+      return;
     sessionStore.setCurrentSession(session.data);
     agentStore.clearCurrentAgentInfo();
     chatStore.setCurrentWorkflow(null);
     if (result.data.created && result.data.initialMessage)
-      localStorage.setItem('chatContent', result.data.initialMessage);
-    await sessionStore.requestSessionList(1, true);
+      chatStore.setPendingMessage(result.data.sessionId, result.data.initialMessage);
     await router.push({ name: 'chatWithId', params: { id: result.data.sessionId } });
   }
   catch {
-    detailError.value = '教学会话打开失败，请重试。';
+    if (ownsRequest())
+      detailError.value = '教学会话打开失败，请重试。';
   }
   finally {
-    action.value = '';
+    if (current === detailSequence)
+      action.value = '';
   }
 }
 </script>
@@ -180,7 +212,7 @@ async function study(chapterId: string) {
         <h1>我的课程</h1>
         <p>按章节学习，保存进度，随时回到上次的教学会话。</p>
       </div>
-      <el-button :loading="loading" :disabled="!user.token" @click="load">
+      <el-button :loading="loading" :disabled="!user.token" @click="refresh">
         刷新课程
       </el-button>
     </header>
@@ -313,6 +345,7 @@ async function study(chapterId: string) {
             加入时的课程版本 {{ detail.courseVersion }} · 已完成
             {{ detail.completedChapters.length }} / {{ detail.chapters.length }} 章
           </p>
+          <CourseMaterials :materials="detail.materials || []" :scope-key="detail.id" :download="(id, signal) => downloadLearningMaterial(detail!.id, id, signal)" />
           <div class="chapter-layout">
             <nav class="chapter-nav" aria-label="课程章节">
               <button

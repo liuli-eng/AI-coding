@@ -3,8 +3,8 @@
 import type { ConversationItem } from 'vue-element-plus-x/types/Conversations';
 import type { ChatSessionVo } from '@/api/session/types';
 import { useRoute, useRouter } from 'vue-router';
-import { get_session } from '@/api';
 import logo from '@/assets/images/logo.png';
+import { systemName } from '@/stores/modules/application';
 import Collapse from '@/layouts/components/Header/components/Collapse.vue';
 import { useDesignStore } from '@/stores';
 import { useSessionStore } from '@/stores/modules/session';
@@ -14,7 +14,6 @@ const router = useRouter();
 const designStore = useDesignStore();
 const sessionStore = useSessionStore();
 
-const sessionId = computed(() => route.params?.id);
 const conversationsList = computed(() => sessionStore.sessionList);
 const loadMoreLoading = computed(() => sessionStore.isLoadingMore);
 const isAppMarketActive = computed(() => route.name === 'appMarket');
@@ -54,13 +53,6 @@ function handleClearSearch() {
 onMounted(async () => {
   // 鑾峰彇浼氳瘽鍒楄〃
   await sessionStore.requestSessionList();
-
-  // 楂樹寒鏈€鏂颁細璇?
-  if (conversationsList.value.length > 0 && sessionId.value) {
-    const currentSessionRes = await get_session(`${sessionId.value}`);
-    // 閫氳繃 ID 鏌ヨ璇︽儏锛岃缃綋鍓嶄細璇?(鍥犱负鏈夊垎椤?
-    sessionStore.setCurrentSession(currentSessionRes.data);
-  }
 });
 
 watch(
@@ -187,7 +179,7 @@ function handleMenuCommand(command: string, item: ConversationItem<ChatSessionVo
       <div v-if="!designStore.isCollapse" class="aside-header">
         <div class="flex items-center gap-8px hover:cursor-pointer" @click="handleCreatChat">
           <el-image :src="logo" alt="logo" fit="cover" class="logo-img" />
-          <span class="logo-text max-w-150px text-overflow">AI 编程助手</span>
+          <span class="logo-text max-w-150px text-overflow">{{ systemName }}</span>
         </div>
         <Collapse class="ml-auto" />
       </div>
@@ -233,7 +225,11 @@ function handleMenuCommand(command: string, item: ConversationItem<ChatSessionVo
           <span>媒体工作台</span>
         </router-link>
 
-        <router-link :to="{name:'myLearning'}" class="workbench-entry" :class="{active:route.name==='myLearning'}">
+        <router-link :to="{ name: 'knowledge' }" class="workbench-entry" :class="{ active: route.name === 'knowledge' }">
+          <el-icon><Collection /></el-icon><span>知识库</span>
+        </router-link>
+
+        <router-link :to="{ name: 'myLearning' }" class="workbench-entry" :class="{ active: route.name === 'myLearning' }">
           <el-icon><Reading /></el-icon><span>我的课程</span>
         </router-link>
         <div class="divider" />

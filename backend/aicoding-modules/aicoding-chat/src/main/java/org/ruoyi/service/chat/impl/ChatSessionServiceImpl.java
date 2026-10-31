@@ -32,6 +32,7 @@ public class ChatSessionServiceImpl implements IChatSessionService {
 
     private final ChatSessionMapper baseMapper;
     private final org.ruoyi.service.chat.ChatPromptService promptService;
+    private final org.ruoyi.service.knowledge.KnowledgeBaseAccessService knowledgeAccess;
 
     /**
      * 查询会话管理
@@ -89,7 +90,9 @@ public class ChatSessionServiceImpl implements IChatSessionService {
      */
     @Override
     public Boolean insertByBo(ChatSessionBo bo) {
+        String knowledgeId = checkedKnowledgeBinding(bo.getKnowledgeId());
         ChatSession add = MapstructUtils.convert(bo, ChatSession.class);
+        add.setKnowledgeId(knowledgeId);
         add.setChatMode(org.ruoyi.service.chat.ChatModePolicy.normalize(add.getChatMode()));
         var prompt = promptService.resolve(bo.getPromptId(), add.getChatMode());
         if (prompt != null) {
@@ -117,7 +120,9 @@ public class ChatSessionServiceImpl implements IChatSessionService {
         if ((bo.getPromptId()!=null && !bo.getPromptId().equals(current.getPromptId())) ||
             (bo.getChatMode()!=null && !org.ruoyi.service.chat.ChatModePolicy.normalize(bo.getChatMode()).equals(current.getChatMode())))
             throw new org.ruoyi.common.core.exception.ServiceException("会话模式与模板创建后保持不变，请新建会话");
+        String knowledgeId = checkedKnowledgeBinding(bo.getKnowledgeId() == null ? current.getKnowledgeId() : bo.getKnowledgeId());
         ChatSession update = MapstructUtils.convert(bo, ChatSession.class);
+        update.setKnowledgeId(knowledgeId);
         if (update.getChatMode() != null) update.setChatMode(org.ruoyi.service.chat.ChatModePolicy.normalize(update.getChatMode()));
         validEntityBeforeSave(update);
         return baseMapper.updateById(update) > 0;
@@ -126,6 +131,12 @@ public class ChatSessionServiceImpl implements IChatSessionService {
     /**
      * 保存前的数据校验
      */
+    private String checkedKnowledgeBinding(String knowledgeId) {
+        if (StringUtils.isBlank(knowledgeId)) return null;
+        knowledgeAccess.requireAccessible(knowledgeId);
+        return knowledgeId;
+    }
+
     private void validEntityBeforeSave(ChatSession entity){
         //TODO 做一些数据校验,如唯一约束
     }

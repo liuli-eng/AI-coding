@@ -1,4 +1,5 @@
 import type { ChatMessageVo, WfNodeInput, WfNodeInputDef } from '@/api/chat/types';
+import type { KnowledgeBaseSummary } from '@/api/knowledge';
 import { defineStore } from 'pinia';
 import { getChatList } from '@/api';
 import { useUserStore } from './user';
@@ -33,11 +34,21 @@ export const useChatStore = defineStore('chat', () => {
     isDeepThinking.value = value;
   };
 
-  // 知识库ID
-  const knowledgeId = ref<string>('');
-
-  const setKnowledgeId = (id: string) => {
-    knowledgeId.value = id;
+  // Only applies to the next new ordinary conversation; never persisted across login.
+  const draftKnowledge = ref<KnowledgeBaseSummary | null>(null);
+  const setDraftKnowledge = (base: KnowledgeBaseSummary | null) => {
+    draftKnowledge.value = base;
+  };
+  const pendingMessage = ref<{ sessionId: string; content: string } | null>(null);
+  const setPendingMessage = (sessionId: string, content: string) => {
+    pendingMessage.value = { sessionId, content };
+  };
+  const takePendingMessage = (sessionId: string) => {
+    if (pendingMessage.value?.sessionId !== sessionId)
+      return '';
+    const content = pendingMessage.value.content;
+    pendingMessage.value = null;
+    return content;
   };
 
   // 会议ID对应-聊天记录 map对象
@@ -49,6 +60,8 @@ export const useChatStore = defineStore('chat', () => {
 
   const setCurrentWorkflow = (wf: WorkflowBinding | null) => {
     currentWorkflow.value = wf;
+    if (wf)
+      setDraftKnowledge(null);
   };
 
   const clearCurrentWorkflow = () => {
@@ -128,13 +141,24 @@ export const useChatStore = defineStore('chat', () => {
     return afterThink;
   }
 
+  watch(() => userStore.token, () => {
+    draftKnowledge.value = null;
+    pendingMessage.value = null;
+    currentWorkflow.value = null;
+    chatMap.value = {};
+    localStorage.removeItem('chatContent');
+  }, { flush: 'sync' });
+
   return {
     chatMap,
     requestChatList,
     isDeepThinking,
     setDeepThinking,
-    knowledgeId,
-    setKnowledgeId,
+    draftKnowledge,
+    setDraftKnowledge,
+    pendingMessage,
+    setPendingMessage,
+    takePendingMessage,
     currentWorkflow,
     setCurrentWorkflow,
     clearCurrentWorkflow,

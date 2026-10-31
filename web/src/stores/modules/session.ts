@@ -10,6 +10,9 @@ import {
   get_session_list,
   update_session,
 } from '@/api';
+import { readApiResult } from '@/utils/api-result';
+import { useAgentStore } from './agent';
+import { useChatStore } from './chat';
 import { useUserStore } from './user';
 
 export const useSessionStore = defineStore('session', () => {
@@ -21,6 +24,39 @@ export const useSessionStore = defineStore('session', () => {
   // 设置当前会话
   const setCurrentSession = (session: ChatSessionVo | null) => {
     currentSession.value = session;
+  };
+
+  const sessionLoading = ref(false);
+  const sessionError = ref('');
+  let restoreSequence = 0;
+  const getConversationGeneration = () => restoreSequence;
+  const restoreSession = async (id: string) => {
+    const sequence = ++restoreSequence;
+    currentSession.value = null;
+    sessionLoading.value = true;
+    sessionError.value = '';
+    try {
+      const response = await readApiResult<ChatSessionVo>(get_session(id));
+      if (sequence !== restoreSequence)
+        return null;
+      if (String(response.data?.id) !== id)
+        throw new Error('Invalid session');
+      if (response.data.knowledgeId?.trim()) {
+        useChatStore().clearCurrentWorkflow();
+        useAgentStore().clearCurrentAgentInfo();
+      }
+      setCurrentSession(response.data);
+      return response.data;
+    }
+    catch {
+      if (sequence === restoreSequence)
+        sessionError.value = '会话加载失败，请重试后发送。';
+      return null;
+    }
+    finally {
+      if (sequence === restoreSequence)
+        sessionLoading.value = false;
+    }
   };
 
   // 会话列表核心状态
@@ -35,12 +71,29 @@ export const useSessionStore = defineStore('session', () => {
   const searchKeyword = ref(''); // 搜索关键词
   const isSearching = ref(false); // 是否正在搜索
 
+  watch(() => userStore.token, () => {
+    restoreSequence++;
+    currentSession.value = null;
+    sessionList.value = [];
+    sessionLoading.value = false;
+    sessionError.value = '';
+  }, { flush: 'sync' });
+
   // 创建新对话（按钮点击）
   const createSessionBtn = async () => {
     try {
       // 清空当前选中会话信息
+      restoreSequence++;
       setCurrentSession(null);
-      router.replace({ name: 'chat' });
+      sessionError.value = '';
+      sessionLoading.value = false;
+      const chatStore = useChatStore();
+      chatStore.setDraftKnowledge(null);
+      chatStore.pendingMessage = null;
+      chatStore.clearCurrentWorkflow();
+      useAgentStore().clearCurrentAgentInfo();
+      localStorage.removeItem('chatContent');
+      await router.replace({ name: 'chat' });
     }
     catch (error) {
       console.error('createSessionBtn错误:', error);
@@ -65,6 +118,7 @@ export const useSessionStore = defineStore('session', () => {
       return;
     }
 
+    const requestToken = userStore.token;
     isLoading.value = page === 1; // 第一页时标记为全局加载
     isLoadingMore.value = page > 1; // 非第一页时标记为加载更多
 
@@ -80,6 +134,8 @@ export const useSessionStore = defineStore('session', () => {
       };
 
       const resArr = await get_session_list(params);
+      if (requestToken !== userStore.token)
+        return;
 
       // 预处理会话分组 并添加前缀图标
       const res = processSessions(resArr.rows);
@@ -121,41 +177,23 @@ export const useSessionStore = defineStore('session', () => {
 
   // 发送消息后创建新会话
   const createSessionList = async (data: Omit<CreateSessionDTO, 'id'>) => {
-    if (!userStore.token) {
-      router.replace({
-        name: 'chatWithId',
-        params: {
-          id: 'not_login',
-        },
-      });
-      return;
-    }
+    if (!userStore.token)
+      throw new Error('请先登录');
 
-    try {
-      const res = await create_session(data);
-      // 创建会话后立刻查询列表会话
-      // 1. 先找到被修改会话在 sessionList 中的索引（假设 sessionList 是按服务端排序的完整列表）
-      const targetIndex = sessionList.value.findIndex(session => session.id === `${res.data}`);
-      // 2. 计算该会话所在的页码（页大小固定为 pageSize.value）
-      const targetPage
-        = targetIndex >= 0
-          ? Math.floor(targetIndex / pageSize.value) + 1 // 索引从0开始，页码从1开始
-          : 1; // 未找到时默认刷新第一页（可能因排序变化导致位置改变）
-      // 3. 刷新目标页数据
-      await requestSessionList(targetPage, true);
-      // 并将当前勾选信息设置为新增的会话信息
-      const newSessionRes = await get_session(`${res.data}`);
-      setCurrentSession(newSessionRes.data);
-
-      // 跳转聊天页
-      router.replace({
-        name: 'chatWithId',
-        params: { id: `${res.data}` },
-      });
-    }
-    catch (error) {
-      console.error('createSessionList错误:', error);
-    }
+    const requestToken = userStore.token;
+    const operation = restoreSequence;
+    const res = await readApiResult<string | number>(create_session(data));
+    const id = String(res.data);
+    const newSessionRes = await readApiResult<ChatSessionVo>(get_session(id));
+    if (requestToken !== userStore.token || operation !== restoreSequence)
+      throw new Error('会话草稿已重置');
+    setCurrentSession(newSessionRes.data);
+    const chatStore = useChatStore();
+    chatStore.setPendingMessage(id, data.sessionContent || '');
+    chatStore.setDraftKnowledge(null);
+    await router.replace({ name: 'chatWithId', params: { id } });
+    requestSessionList(1, true);
+    return id;
   };
 
   // 加载更多会话（供组件调用）
@@ -251,6 +289,10 @@ export const useSessionStore = defineStore('session', () => {
   return {
     // 当前选中的会话
     currentSession,
+    sessionLoading,
+    sessionError,
+    getConversationGeneration,
+    restoreSession,
     // 设置当前会话
     setCurrentSession,
     // 列表状态

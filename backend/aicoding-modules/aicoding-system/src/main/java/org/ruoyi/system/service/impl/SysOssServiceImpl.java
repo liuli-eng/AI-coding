@@ -234,7 +234,7 @@ public class SysOssServiceImpl implements ISysOssService, OssService {
         ext1.setFileSize(file.getSize());
         ext1.setContentType(file.getContentType());
         // 保存文件信息
-        return buildResultEntity(originalfileName, suffix, storage.getConfigKey(), uploadResult, ext1);
+        return buildResultEntity(originalfileName, suffix, storage.getConfigKey(), uploadResult, ext1, storage);
     }
 
     /**
@@ -391,20 +391,6 @@ public class SysOssServiceImpl implements ISysOssService, OssService {
                 failure.addSuppressed(cleanupFailure);
             }
         }
-    }
-
-    @NotNull
-    private SysOssVo buildResultEntity(String originalfileName, String suffix, String configKey, UploadResult uploadResult, SysOssExt ext1) {
-        SysOss oss = new SysOss();
-        oss.setUrl(uploadResult.getUrl());
-        oss.setFileSuffix(suffix);
-        oss.setFileName(uploadResult.getFilename());
-        oss.setOriginalName(originalfileName);
-        oss.setService(configKey);
-        oss.setExt1(JsonUtils.toJsonString(ext1));
-        baseMapper.insert(oss);
-        SysOssVo sysOssVo = MapstructUtils.convert(oss, SysOssVo.class);
-        return this.matchingUrl(sysOssVo);
     }
 
     /**

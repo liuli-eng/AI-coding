@@ -12,7 +12,7 @@ import static org.mockito.Mockito.*;
 class ChatSessionAccessTest {
     @Test void cannotReadEditOrDeleteAnotherUsersSession() {
         var sessions = mock(IChatSessionService.class);
-        var guard = new ChatSessionOwnershipGuard(sessions);
+        var guard = new ChatSessionOwnershipGuard(sessions, mock(org.ruoyi.service.learning.CourseMaterialService.class));
         var controller = new ChatSessionController(sessions, guard);
         var other = new ChatSessionVo(); other.setId(20L); other.setUserId(2L);
         when(sessions.queryById(20L)).thenReturn(other);
@@ -30,7 +30,7 @@ class ChatSessionAccessTest {
         var sessions = mock(IChatSessionService.class);
         var owned = new ChatSessionVo(); owned.setId(20L); owned.setUserId(1L);
         when(sessions.queryById(20L)).thenReturn(owned); when(sessions.updateByBo(any())).thenReturn(true);
-        var controller = new ChatSessionController(sessions, new ChatSessionOwnershipGuard(sessions));
+        var controller = new ChatSessionController(sessions, new ChatSessionOwnershipGuard(sessions, mock(org.ruoyi.service.learning.CourseMaterialService.class)));
         try (var login = mockStatic(LoginHelper.class)) {
             login.when(LoginHelper::getUserId).thenReturn(1L);
             var bo = new ChatSessionBo(); bo.setId(20L); bo.setUserId(99L); bo.setChatMode("debugging");

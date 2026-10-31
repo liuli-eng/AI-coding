@@ -32,6 +32,11 @@ public class ChatSession extends BaseEntity {
      */
     private Long userId;
 
+    private String tenantId;
+
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    private String courseMaterialIds;
+
     /**
      * 会话标题
      */
@@ -39,6 +44,10 @@ public class ChatSession extends BaseEntity {
 
     /** Persisted teaching/programming/debugging policy. */
     private String chatMode;
+
+    /** Optional ordinary-chat knowledge source, stored as a string to preserve ID precision. */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private String knowledgeId;
 
     private Long promptId;
     private String promptName;

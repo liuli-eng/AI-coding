@@ -1,6 +1,8 @@
 import type { PageQuery, BaseEntity } from '#/api/common';
 
 export interface InfoVO {
+  similarityThreshold: number;
+  status: '0' | '1';
   /**
    * 主键
    */
@@ -93,6 +95,7 @@ export interface InfoVO {
 }
 
 export interface InfoForm extends BaseEntity {
+  similarityThreshold?: number;
   /**
    * 主键
    */
@@ -185,6 +188,7 @@ export interface InfoForm extends BaseEntity {
 }
 
 export interface InfoQuery extends PageQuery {
+  status?: '0' | '1';
   /**
    * 用户ID
    */
@@ -236,7 +240,7 @@ export interface InfoQuery extends PageQuery {
   embeddingModel?: string;
 
   /**
-    * 日期范围参数
-    */
+   * 日期范围参数
+   */
   params?: any;
 }

@@ -13,6 +13,7 @@ public class CourseEnrollment extends TenantEntity {
     private String title;
     private String description;
     private String chapters;
+    private String materialIds;
     private Integer courseVersion;
     private String completedChapters;
     private String chapterSessions;

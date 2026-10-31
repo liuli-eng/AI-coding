@@ -42,6 +42,9 @@ public class KnowledgeInfo extends BaseEntity {
      */
     private Long share;
 
+    /** 0 enabled, 1 disabled; changed only through the dedicated administrator action. */
+    private String status;
+
     /**
      * 知识库描述
      */
