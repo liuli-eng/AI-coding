@@ -34,9 +34,9 @@ setupVbenVxeTable({
         showOverflow: true,
         pagerConfig: {
           // 默认条数
-          pageSize: 10,
+          pageSize: 20,
           // 分页可选条数
-          pageSizes: [10, 20, 30, 40, 50],
+          pageSizes: [10, 20, 30, 50, 100],
         },
         rowConfig: {
           // 鼠标移入行显示 hover 样式
