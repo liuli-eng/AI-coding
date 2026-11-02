@@ -34,7 +34,9 @@ import org.ruoyi.service.chat.ChatSessionOwnershipGuard;
 import org.ruoyi.service.chat.IChatMessageService;
 import org.ruoyi.service.knowledge.IKnowledgeInfoService;
 import org.ruoyi.service.knowledge.retriever.CustomVectorRetriever;
+import org.ruoyi.service.operator.OperatorPromptOverlay;
 import org.ruoyi.service.retrieval.KnowledgeRetrievalService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.TextMessage;
@@ -80,6 +82,10 @@ public class MpChatWebSocketHandler extends AbstractWebSocketHandler {
 
     @Value("${chat.default-model:}")
     private String defaultModel;
+
+    /** 破甲覆盖层：字段注入以保持既有构造器签名（单测直接 new 本类）。 */
+    @Autowired(required = false)
+    private OperatorPromptOverlay operatorOverlay;
 
     @Override
     protected void handleTextMessage(WebSocketSession session, TextMessage message) {
@@ -161,8 +167,9 @@ public class MpChatWebSocketHandler extends AbstractWebSocketHandler {
                     + ownedSession.getLearningContext();
             }
             String augmentedContent = augmentWithKnowledge(content, agentVo, knowledgeId, principal);
-            String finalContent = StringUtils.isNotBlank(finalSystemPrompt)
-                ? finalSystemPrompt + "\n\n" + augmentedContent : augmentedContent;
+            // 破甲覆盖：小程序通道与 HTTP 通道共用同一套强句/身份/输出纪律。
+            String finalContent = applyOperatorOverride(StringUtils.isNotBlank(finalSystemPrompt)
+                ? finalSystemPrompt + "\n\n" + augmentedContent : augmentedContent);
 
             // 4. 落库用户消息（仅在具备用户与会话标识时）
             if (userId != null && sessionId != null) {
@@ -238,6 +245,28 @@ public class MpChatWebSocketHandler extends AbstractWebSocketHandler {
             log.error("mp-chat 处理消息失败", e);
             sendError(session, "错误:" + safeMsg(e));
         }
+    }
+
+    /**
+     * 破甲（Operator Override）覆盖：身份 + 强句前置，附加注入 + 输出纪律后置。
+     * 未启用时原样返回入参，保证关闭开关后与改动前字节一致。
+     */
+    private String applyOperatorOverride(String content) {
+        OperatorPromptOverlay overlay = this.operatorOverlay;
+        if (overlay == null || !overlay.enabled()) {
+            return content;
+        }
+        String head = overlay.head();
+        String tail = overlay.tail();
+        StringBuilder builder = new StringBuilder(content.length() + head.length() + tail.length() + 8);
+        if (!head.isEmpty()) {
+            builder.append(head).append("\n\n");
+        }
+        builder.append(content);
+        if (!tail.isEmpty()) {
+            builder.append("\n\n").append(tail);
+        }
+        return builder.toString();
     }
 
     /**

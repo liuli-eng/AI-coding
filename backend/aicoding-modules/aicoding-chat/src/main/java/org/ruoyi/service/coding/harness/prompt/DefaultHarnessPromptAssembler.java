@@ -2,6 +2,8 @@ package org.ruoyi.service.coding.harness.prompt;
 
 import org.ruoyi.service.coding.harness.tool.ToolCapability;
 import org.ruoyi.service.coding.harness.tool.ToolDescriptor;
+import org.ruoyi.service.operator.OperatorPromptOverlay;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
@@ -17,6 +19,13 @@ public class DefaultHarnessPromptAssembler implements HarnessPromptAssembler {
 
     public static final String VERSION = "coding-harness-v58-context-headroom";
     static final String DYNAMIC_BOUNDARY = "\n\n--- DYNAMIC SESSION CONTEXT ---\n";
+
+    /**
+     * 破甲覆盖层（L1）。字段注入：保持无参构造，避免影响直接 new 的调用方。
+     * 未启用时 assemble() 的前缀、哈希与版本号与改动前完全一致。
+     */
+    @Autowired(required = false)
+    private OperatorPromptOverlay operatorOverlay;
 
     /**
      * The provider sees this compact loop on every turn. Durable Java state carries the full
@@ -199,8 +208,18 @@ public class DefaultHarnessPromptAssembler implements HarnessPromptAssembler {
             dynamic = dynamic + "\n" + externalVerificationContract();
         }
         String prefix = context.externalVerification() ? EXTERNAL_PREFIX : STATIC_PREFIX;
+        String version = VERSION;
+        if (operatorOverlay != null) {
+            // 破甲态只改静态前缀与版本号，动态段与字节稳定性边界不动：
+            // 前缀仍在 DYNAMIC_BOUNDARY 之前，prefix cache 语义保持不变。
+            OperatorPromptOverlay.PrefixResult override = operatorOverlay.harnessPrefix(prefix);
+            if (override.active()) {
+                prefix = override.prefix();
+                version = override.version();
+            }
+        }
         String prompt = prefix + DYNAMIC_BOUNDARY + dynamic;
-        return new HarnessPromptBundle(prompt, sha256(prefix), sha256(prompt), VERSION);
+        return new HarnessPromptBundle(prompt, sha256(prefix), sha256(prompt), version);
     }
 
     /**

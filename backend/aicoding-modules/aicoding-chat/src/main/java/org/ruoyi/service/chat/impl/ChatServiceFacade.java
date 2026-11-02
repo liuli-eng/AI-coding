@@ -68,10 +68,15 @@ import org.ruoyi.service.chat.ChatSessionOwnershipGuard;
 import org.ruoyi.service.chat.IChatMessageService;
 import org.ruoyi.service.chat.impl.memory.PersistentChatMemoryStore;
 import org.ruoyi.service.knowledge.IKnowledgeInfoService;
+import org.ruoyi.service.operator.OperatorAuditService;
+import org.ruoyi.service.operator.OperatorPromptOverlay;
+import org.ruoyi.service.operator.OperatorRefusalGate;
+import org.ruoyi.service.operator.RefusalGuard;
 import org.ruoyi.service.retrieval.KnowledgeRetrievalService;
 import org.ruoyi.service.knowledge.retriever.CustomVectorRetriever;
 import org.ruoyi.argtrace.RagTraceNodeTypes;
 import org.ruoyi.argtrace.RagTracePayloadBuilder;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -132,6 +137,20 @@ public class ChatServiceFacade implements IChatService {
     private final org.ruoyi.service.chat.ChatQuestionService questionService;
 
     private final org.ruoyi.service.knowledge.KnowledgeBaseAccessService knowledgeAccess;
+
+    /**
+     * 破甲覆盖层（L1/L2）。字段注入而非构造器注入：本类的构造器签名被 14 处单测直接使用，
+     * 追加构造参数会把测试全部打断；required=false 保证没有该组件时行为与改动前一致。
+     */
+    @Autowired(required = false)
+    private OperatorPromptOverlay operatorOverlay;
+
+    @Autowired(required = false)
+    private OperatorAuditService operatorAudit;
+
+    /** 拒绝兜底（L4）：只在破甲态且配置了重试额度时启用。 */
+    @Autowired(required = false)
+    private RefusalGuard refusalGuard;
 
     /**
      * 内存实例缓存，避免同一会话重复创建
@@ -286,10 +305,7 @@ public class ChatServiceFacade implements IChatService {
             StreamingChatModel streamingChatModel = chatService.buildStreamingChatModel(chatModelVo, chatRequest);
             List<ChatMessage> messages = buildModelChatMessages(chatRequest, traceRun);
             llmSpan = startLlmCallSpan(traceRun, chatRequest, "handleModelChat");
-            streamingChatModel.chat(
-                messages,
-                createModelChatResponseHandler(chatRequest, traceRun, llmSpan)
-            );
+            streamWithOperatorGate(streamingChatModel, messages, chatRequest, traceRun, llmSpan);
         } catch (Exception e) {
             if (llmSpan != null) {
                 llmSpan.finishError(e);
@@ -302,6 +318,73 @@ public class ChatServiceFacade implements IChatService {
                 errorType(e), rootCauseMessage(e), e);
         }
         return chatRequest.getEmitter();
+    }
+
+    /**
+     * 带拒绝兜底的流式调用（L4）。
+     *
+     * <p>未启用破甲、未配置重试额度、或没有对应组件时，与原来的直接调用完全等价（零行为差异）。
+     */
+    private void streamWithOperatorGate(StreamingChatModel streamingChatModel, List<ChatMessage> messages,
+                                        ChatRequest chatRequest, TraceRunHandle traceRun,
+                                        TraceStreamSpan llmSpan) {
+        StreamingChatResponseHandler delegate =
+            createModelChatResponseHandler(chatRequest, traceRun, llmSpan);
+        RefusalGuard guard = this.refusalGuard;
+        boolean gateActive = guard != null && guard.enabled()
+            && operatorOverlay != null && operatorOverlay.operatorMode();
+        if (!gateActive) {
+            streamingChatModel.chat(messages, delegate);
+            return;
+        }
+        attemptGuardedStream(streamingChatModel, messages, delegate, guard, 0, guard.retryMax(), chatRequest);
+    }
+
+    private void attemptGuardedStream(StreamingChatModel streamingChatModel, List<ChatMessage> messages,
+                                      StreamingChatResponseHandler delegate, RefusalGuard guard,
+                                      int attempt, int maxAttempts, ChatRequest chatRequest) {
+        // 第 2 次起换消息集，而不是原样重问：原样重问在确定性采样下几乎必然得到同一句拒绝。
+        List<ChatMessage> effective = attempt == 0 ? messages : reinforceForRetry(messages);
+        OperatorRefusalGate gate = new OperatorRefusalGate(delegate, guard, attempt, maxAttempts,
+            () -> attemptGuardedStream(streamingChatModel, messages, delegate, guard,
+                attempt + 1, maxAttempts, chatRequest),
+            "chat.model", chatRequest.getModel(), chatRequest.getContent());
+        streamingChatModel.chat(effective, gate);
+    }
+
+    /**
+     * 重试用的消息集（两条都会显著影响重试成功率）：
+     *
+     * <ol>
+     *   <li><b>剥离模型自己上一次的拒绝</b>：聊天记忆会把「我刚才拒绝了」当成既定立场带进下一轮，
+     *       越问越硬；重试时必须把它从历史里摘掉。</li>
+     *   <li><b>把强化段并进第一条 SystemMessage</b>：不新增 system 消息，避免部分 provider 拒绝多条 system。</li>
+     * </ol>
+     */
+    private List<ChatMessage> reinforceForRetry(List<ChatMessage> messages) {
+        String reinforcement = operatorOverlay == null ? "" : operatorOverlay.retryReinforcement();
+        RefusalGuard guard = this.refusalGuard;
+        List<ChatMessage> result = new ArrayList<>(messages.size());
+        boolean systemPatched = false;
+        for (ChatMessage message : messages) {
+            if (message instanceof SystemMessage system && !systemPatched) {
+                String text = system.text();
+                if (!reinforcement.isEmpty()) {
+                    text = text + "\n\n" + reinforcement;
+                }
+                result.add(SystemMessage.from(text));
+                systemPatched = true;
+                continue;
+            }
+            if (guard != null && message instanceof AiMessage ai && guard.looksLikeRefusal(ai.text())) {
+                continue;
+            }
+            result.add(message);
+        }
+        if (!systemPatched && !reinforcement.isEmpty()) {
+            result.add(0, SystemMessage.from(reinforcement));
+        }
+        return result;
     }
 
     /**
@@ -386,20 +469,21 @@ public class ChatServiceFacade implements IChatService {
         // 知识库增强：智能体绑定了知识库时，对 supervisor 输入做一次 RAG 增强（全程唯一一次检索）
         String augmentedInput = augmentAgentInput(chatRequest, agentVo, traceRun);
         // 组装最终 prompt：系统提示词 → 多轮历史 → RAG 增强后的当前提问
-        StringBuilder promptBuilder = new StringBuilder();
-        promptBuilder.append(org.ruoyi.service.chat.ChatModePolicy.prompt(chatRequest.getChatMode())).append("\n\n");
-        if (StringUtils.isNotBlank(chatRequest.getPromptSnapshot())) promptBuilder.append(chatRequest.getPromptSnapshot()).append("\n\n");
-        if (StringUtils.isNotBlank(chatRequest.getLearningContext())) promptBuilder.append(chatRequest.getLearningContext()).append("\n\n");
+        // 宿主模式人设段单独传入：破甲替换模式下它会被注入段整体替换（对齐 purge 的 personaPrefix: ""）。
+        String agentModePrompt = org.ruoyi.service.chat.ChatModePolicy.prompt(chatRequest.getChatMode());
+        StringBuilder agentBody = new StringBuilder();
+        if (StringUtils.isNotBlank(chatRequest.getPromptSnapshot())) agentBody.append(chatRequest.getPromptSnapshot()).append("\n\n");
+        if (StringUtils.isNotBlank(chatRequest.getLearningContext())) agentBody.append(chatRequest.getLearningContext()).append("\n\n");
         if (agentVo != null && StringUtils.isNotBlank(agentVo.getSystemPrompt())) {
-            promptBuilder.append(agentVo.getSystemPrompt()).append("\n\n");
+            agentBody.append(agentVo.getSystemPrompt()).append("\n\n");
         }
         String historyText = formatHistoryMessages(chatRequest.getContextMessages(), chatRequest.getContent());
         if (StringUtils.isNotBlank(historyText)) {
-            promptBuilder.append("以下是本次会话的历史对话，请结合上下文理解用户最新提问：\n")
+            agentBody.append("以下是本次会话的历史对话，请结合上下文理解用户最新提问：\n")
                 .append(historyText).append("\n\n");
         }
-        promptBuilder.append(augmentedInput);
-        String prompt = promptBuilder.toString();
+        agentBody.append(augmentedInput);
+        String prompt = composeOperatorSystemPrompt("chat.agent", agentModePrompt, agentBody.toString());
 
         // 异步执行 supervisor，避免阻塞 HTTP 请求线程导致 SSE 事件被缓冲
         CompletableFuture.runAsync(() -> {
@@ -681,13 +765,16 @@ public class ChatServiceFacade implements IChatService {
      */
     private List<ChatMessage> buildContextMessages(ChatRequest chatRequest, AgentVo agentVo) {
         List<ChatMessage> messages = new ArrayList<>();
-        String systemPrompt = org.ruoyi.service.chat.ChatModePolicy.prompt(chatRequest.getChatMode());
-        if (StringUtils.isNotBlank(chatRequest.getPromptSnapshot())) systemPrompt += "\n\n" + chatRequest.getPromptSnapshot();
-        if (StringUtils.isNotBlank(chatRequest.getLearningContext())) systemPrompt += "\n\n" + chatRequest.getLearningContext();
+        String modePrompt = org.ruoyi.service.chat.ChatModePolicy.prompt(chatRequest.getChatMode());
+        StringBuilder extra = new StringBuilder();
+        if (StringUtils.isNotBlank(chatRequest.getPromptSnapshot())) extra.append(chatRequest.getPromptSnapshot()).append("\n\n");
+        if (StringUtils.isNotBlank(chatRequest.getLearningContext())) extra.append(chatRequest.getLearningContext()).append("\n\n");
         if (agentVo != null && StringUtils.isNotBlank(agentVo.getSystemPrompt())) {
-            systemPrompt += "\n\n" + agentVo.getSystemPrompt();
+            extra.append(agentVo.getSystemPrompt());
         }
-        messages.add(SystemMessage.from(systemPrompt));
+        // 宿主模式人设单独传入：替换模式下它会被注入段整体替换，快照与学习上下文保留。
+        messages.add(SystemMessage.from(
+            composeOperatorSystemPrompt("chat.context", modePrompt, extra.toString())));
 
         // 1. 从数据库查询历史对话消息（放在前面）
         if (chatRequest.getSessionId() != null) {
@@ -705,6 +792,35 @@ public class ChatServiceFacade implements IChatService {
         messages.add(UserMessage.userMessage(chatRequest.getContent()));
 
         return messages;
+    }
+
+    /**
+     * 破甲覆盖系统提示词。
+     *
+     * <p>两种模式（由 {@code ai.operator.replace-base-prompt} 决定）：
+     * <ul>
+     *   <li><b>替换</b>（默认）：身份 + 注入 + 其余（快照/学习上下文/智能体系统词）+ 交付纪律，
+     *       宿主自带的模式人设段被丢弃——等价 purge 把 {@code personaPrefix} 清空；</li>
+     *   <li><b>追加</b>：身份 + 宿主模式人设 + 其余 + 注入 + 交付纪律。</li>
+     * </ul>
+     * 未启用时输出与改动前字节一致。
+     *
+     * @param scene      装配点标识，仅用于审计
+     * @param modePrompt 宿主模式人设（learning / programming / debugging）
+     * @param extra      快照、学习上下文、智能体系统词等其余内容
+     */
+    private String composeOperatorSystemPrompt(String scene, String modePrompt, String extra) {
+        OperatorPromptOverlay overlay = this.operatorOverlay;
+        String rest = extra == null ? "" : extra;
+        if (overlay == null) {
+            String base = modePrompt == null ? "" : modePrompt;
+            return rest.isBlank() ? base : base + "\n\n" + rest;
+        }
+        String composed = overlay.composeSystemPrompt(modePrompt, rest);
+        if (operatorAudit != null && overlay.enabled()) {
+            operatorAudit.recordInjection(scene, overlay.head().length(), overlay.tail().length());
+        }
+        return composed;
     }
 
     /**

@@ -120,24 +120,24 @@ async function handleSubmit(content: string) {
         <span class="mode-copy"><strong>{{ item.title }}</strong><small>{{ item.description }}</small></span>
       </button>
     </div>
-    <div v-if="userStore.token && !applicationMode" class="prompt-picker">
-      <label for="chat-prompt">提示词模板</label>
-      <el-select id="chat-prompt" v-model="promptId" clearable :loading="promptsLoading" placeholder="默认提示词" no-data-text="该模式暂无可用模板" aria-label="提示词模板">
-        <el-option v-for="prompt in prompts" :key="prompt.id" :value="prompt.id" :label="prompt.name" />
-      </el-select>
-      <p v-if="promptId" class="prompt-description">
-        {{ prompts.find(p => p.id === promptId)?.description }}
-      </p>
-      <p v-if="promptsError" role="alert">
-        {{ promptsError }} <el-button link @click="loadPrompts">
-          重试
-        </el-button>
-      </p>
-    </div>
-    <KnowledgePicker v-if="userStore.token && !applicationMode" />
-    <p v-if="createError" class="create-error" role="alert">
-      {{ createError }}
-    </p>
+<!--    <div v-if="userStore.token && !applicationMode" class="prompt-picker">-->
+<!--      <label for="chat-prompt">提示词模板</label>-->
+<!--      <el-select id="chat-prompt" v-model="promptId" clearable :loading="promptsLoading" placeholder="默认提示词" no-data-text="该模式暂无可用模板" aria-label="提示词模板">-->
+<!--        <el-option v-for="prompt in prompts" :key="prompt.id" :value="prompt.id" :label="prompt.name" />-->
+<!--      </el-select>-->
+<!--      <p v-if="promptId" class="prompt-description">-->
+<!--        {{ prompts.find(p => p.id === promptId)?.description }}-->
+<!--      </p>-->
+<!--      <p v-if="promptsError" role="alert">-->
+<!--        {{ promptsError }} <el-button link @click="loadPrompts">-->
+<!--          重试-->
+<!--        </el-button>-->
+<!--      </p>-->
+<!--    </div>-->
+<!--    <KnowledgePicker v-if="userStore.token && !applicationMode" />-->
+<!--    <p v-if="createError" class="create-error" role="alert">-->
+<!--      {{ createError }}-->
+<!--    </p>-->
     <ChatSender
       ref="senderRef"
       v-model="senderValue"
