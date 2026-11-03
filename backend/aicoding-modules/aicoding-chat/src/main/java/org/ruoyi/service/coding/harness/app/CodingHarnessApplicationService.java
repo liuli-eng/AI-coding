@@ -49,6 +49,8 @@ import org.ruoyi.service.coding.harness.runtime.HarnessScheduler;
 import org.ruoyi.service.coding.harness.runtime.HarnessSessionGate;
 import org.ruoyi.service.coding.harness.store.HarnessOptimisticLockException;
 import org.ruoyi.service.coding.harness.store.HarnessStore;
+import org.ruoyi.service.operator.OperatorAuditService;
+import org.ruoyi.service.operator.OperatorPromptOverlay;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -59,6 +61,7 @@ import java.util.List;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
@@ -93,6 +96,14 @@ public class CodingHarnessApplicationService {
 
     @Autowired
     private HarnessArtifactRepository artifactRepository;
+
+    /** 破甲覆盖层：存量会话升级用；单测直构时为 null，自动跳过对齐。 */
+    @Autowired(required = false)
+    private OperatorPromptOverlay operatorOverlay;
+
+    /** 破甲审计：升级落一行，出问题可归因。 */
+    @Autowired(required = false)
+    private OperatorAuditService operatorAuditService;
 
     private static final int MAX_IMAGES_PER_RUN = 5;
     private static final long MAX_IMAGE_BYTES_PER_RUN = 50L * 1024 * 1024;
@@ -176,6 +187,79 @@ public class CodingHarnessApplicationService {
         });
     }
 
+    /**
+     * 存量会话升级：operator 生效期间，任何新运行开始前把会话策略对齐到服务端强制值，
+     * 规则与 {@code CodingHarnessController.resolvePermissionMode/resolveApprovalPolicy} 一致。
+     * operator 关闭时不动存量值（回滚语义：关掉 = 不再强制，已升级会话保持现状）；
+     * 有在途 run 的会话本轮跳过，避免在途 run 的策略被中途改写。
+     */
+    private HarnessSessionState reconcileOperatorPolicies(HarnessOwner owner,
+                                                          HarnessSessionState session) {
+        if (operatorOverlay == null || !operatorOverlay.enabled() || session.activeRunId() != null) {
+            return session;
+        }
+        var profile = operatorOverlay.profile();
+        HarnessPermissionMode permissionMode = session.permissionMode();
+        HarnessApprovalPolicy approvalPolicy = session.approvalPolicy();
+        if (profile.forcePermissionMode()) {
+            String configured = profile.permissionMode();
+            if (configured != null && !configured.isBlank()) {
+                try {
+                    permissionMode = HarnessPermissionMode.valueOf(
+                        configured.trim().toUpperCase(Locale.ROOT));
+                } catch (IllegalArgumentException invalid) {
+                    log.warn("operator_reconcile operation=PERMISSION_MODE status=INVALID value={}",
+                        configured);
+                }
+            }
+        }
+        String approvalConfigured = profile.approvalPolicy();
+        if (approvalConfigured != null && !approvalConfigured.isBlank()) {
+            try {
+                approvalPolicy = HarnessApprovalPolicy.valueOf(
+                    approvalConfigured.trim().toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException invalid) {
+                log.warn("operator_reconcile operation=APPROVAL_POLICY status=INVALID value={}",
+                    approvalConfigured);
+            }
+        }
+        if (permissionMode == session.permissionMode()
+            && approvalPolicy == session.approvalPolicy()) {
+            return session;
+        }
+        long now = System.currentTimeMillis();
+        HarnessSessionState upgraded = session.withOperatorPolicies(permissionMode,
+            approvalPolicy, now);
+        try {
+            upgraded = store.saveSession(owner, upgraded, session.revision());
+        } catch (HarnessOptimisticLockException conflict) {
+            log.debug("operator_reconcile action=SESSION_POLICY_UPGRADED status=SKIPPED "
+                + "sessionId={} reason=CONCURRENT_UPDATE", session.sessionId());
+            return session;
+        }
+        log.info("operator_reconcile action=SESSION_POLICY_UPGRADED sessionId={} "
+                + "permissionMode={}→{} approvalPolicy={}→{}",
+            session.sessionId(), session.permissionMode(), permissionMode,
+            session.approvalPolicy(), approvalPolicy);
+        recordOperatorAudit("SESSION_POLICY_UPGRADED",
+            "session=" + session.sessionId()
+                + " permissionMode=" + session.permissionMode() + "->" + permissionMode
+                + " approvalPolicy=" + session.approvalPolicy() + "->" + approvalPolicy);
+        return upgraded;
+    }
+
+    private void recordOperatorAudit(String action, String detail) {
+        if (operatorAuditService == null) {
+            return;
+        }
+        try {
+            operatorAuditService.record(action, "system", detail);
+        } catch (RuntimeException auditUnavailable) {
+            log.debug("operator_reconcile action={} audit=SKIPPED errorType={}", action,
+                auditUnavailable.getClass().getSimpleName());
+        }
+    }
+
     public List<HarnessSessionState> listSessions(HarnessOwner owner) {
         return store.listSessions(owner);
     }
@@ -219,7 +303,8 @@ public class CodingHarnessApplicationService {
         }
         HarnessBudget enforcedBudget = budgetPolicy.enforce(command.budget());
         return sessionGate.withSession(owner, sessionId, () -> {
-            HarnessSessionState session = getSession(owner, sessionId);
+            HarnessSessionState session = reconcileOperatorPolicies(owner,
+                getSession(owner, sessionId));
             String runId = stableId("run", owner, sessionId, command.idempotencyKey());
             HarnessRunState existing = store.findRun(owner, sessionId, runId).orElse(null);
             if (existing != null) {

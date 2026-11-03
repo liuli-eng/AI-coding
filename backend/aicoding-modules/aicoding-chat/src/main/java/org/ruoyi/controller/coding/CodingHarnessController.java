@@ -31,6 +31,7 @@ import org.ruoyi.service.coding.harness.model.HarnessThinkingLevel;
 import org.ruoyi.service.coding.harness.model.HarnessVerificationMode;
 import org.ruoyi.service.coding.harness.model.WorkspaceManifest;
 import org.ruoyi.service.coding.harness.modelruntime.HarnessModelRegistry;
+import org.ruoyi.service.operator.OperatorAuditService;
 import org.ruoyi.service.operator.OperatorPromptOverlay;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
@@ -69,15 +70,19 @@ public class CodingHarnessController {
     private final HarnessModelRegistry modelRegistry;
     /** 破甲覆盖层：决定会话默认审批策略/权限上限与权限位是否豁免（DB 行优先于 ai.operator.*）。 */
     private final OperatorPromptOverlay operatorOverlay;
+    /** 破甲审计（L5）：override 留痕，出问题可归因。 */
+    private final OperatorAuditService operatorAudit;
 
     public CodingHarnessController(CodingHarnessApplicationService applicationService,
                                    HarnessEventHub eventHub,
                                    HarnessModelRegistry modelRegistry,
-                                   OperatorPromptOverlay operatorOverlay) {
+                                   OperatorPromptOverlay operatorOverlay,
+                                   OperatorAuditService operatorAudit) {
         this.applicationService = applicationService;
         this.eventHub = eventHub;
         this.modelRegistry = modelRegistry;
         this.operatorOverlay = operatorOverlay;
+        this.operatorAudit = operatorAudit;
     }
 
     @PostMapping("/sessions")
@@ -112,7 +117,13 @@ public class CodingHarnessController {
             return requested;
         }
         try {
-            return HarnessPermissionMode.valueOf(configured.trim().toUpperCase(Locale.ROOT));
+            HarnessPermissionMode forced =
+                HarnessPermissionMode.valueOf(configured.trim().toUpperCase(Locale.ROOT));
+            if (forced != requested) {
+                auditOverride("PERMISSION_MODE_FORCED",
+                    "requested=" + requested + " forced=" + forced);
+            }
+            return forced;
         } catch (IllegalArgumentException invalid) {
             log.warn("operator_override operation=PERMISSION_MODE status=INVALID value={}", configured);
             return requested;
@@ -129,7 +140,13 @@ public class CodingHarnessController {
             return requested;
         }
         try {
-            return HarnessApprovalPolicy.valueOf(configured.trim().toUpperCase(Locale.ROOT));
+            HarnessApprovalPolicy forced =
+                HarnessApprovalPolicy.valueOf(configured.trim().toUpperCase(Locale.ROOT));
+            if (forced != requested) {
+                auditOverride("APPROVAL_POLICY_FORCED",
+                    "requested=" + requested + " forced=" + forced);
+            }
+            return forced;
         } catch (IllegalArgumentException invalid) {
             log.warn("operator_override operation=APPROVAL_POLICY status=INVALID value={}", configured);
             return requested;
@@ -140,6 +157,7 @@ public class CodingHarnessController {
     private void requireHarnessWrite() {
         if (operatorOverlay != null && operatorOverlay.enabled()
             && operatorOverlay.profile().bypassPermissionChecks()) {
+            auditOverride("PERMISSION_CHECK_BYPASS", "exempted=coding:harness:write");
             return;
         }
         StpUtil.checkPermission("coding:harness:write");
@@ -341,6 +359,23 @@ public class CodingHarnessController {
 
     private HarnessOwner owner() {
         return new HarnessOwner(LoginHelper.getTenantId(), LoginHelper.getUserId());
+    }
+
+    /** override 留痕：结构化日志 + operator_audit 表（表不可用时审计侧自行降级，不影响主流程）。 */
+    private void auditOverride(String action, String detail) {
+        log.info("operator_override action={} {}", action, detail);
+        if (operatorAudit != null) {
+            operatorAudit.record(action, actor(), detail);
+        }
+    }
+
+    private String actor() {
+        try {
+            String name = LoginHelper.getUsername();
+            return name == null ? "anonymous" : name;
+        } catch (RuntimeException notLoggedIn) {
+            return "anonymous";
+        }
     }
 
     private void requireCurrentPermissionCeiling(String sessionId) {

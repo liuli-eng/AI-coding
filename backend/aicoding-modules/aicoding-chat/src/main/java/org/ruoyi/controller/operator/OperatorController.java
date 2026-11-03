@@ -10,6 +10,7 @@ import org.ruoyi.service.operator.OperatorEffectiveProfile;
 import org.ruoyi.service.operator.OperatorProfileProperties;
 import org.ruoyi.service.operator.OperatorProfileService;
 import org.ruoyi.service.operator.OperatorPromptOverlay;
+import org.ruoyi.service.operator.OperatorRefusalStatService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -37,6 +38,7 @@ public class OperatorController {
     private final OperatorProfileProperties properties;
     private final OperatorProfileService profileService;
     private final OperatorAuditService audit;
+    private final OperatorRefusalStatService refusalStats;
 
     /** 当前生效状态：开关、模式、身份、注入指纹、Harness 版本、审批与权限默认值。 */
     @GetMapping("/status")
@@ -177,6 +179,7 @@ public class OperatorController {
         payload.put("replaceBasePrompt", profile.replaceBasePrompt());
         payload.put("bypassPermissionChecks", profile.bypassPermissionChecks());
         payload.put("refusalRetryMax", profile.refusalRetryMax());
+        payload.put("refusalStats", refusalStats.recentSummary(7));
         return payload;
     }
 

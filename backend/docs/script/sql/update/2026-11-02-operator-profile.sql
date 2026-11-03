@@ -61,26 +61,7 @@ EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
 -- ------------------------------------------------------------
--- 2. 规则集（对应 Xsdsh-purge 的「规则库」，可多套并存、按需启用）
--- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `operator_ruleset` (
-  `id`          bigint(20)   NOT NULL,
-  `tenant_id`   varchar(20)  NOT NULL DEFAULT '000000',
-  `profile_id`  bigint(20)            DEFAULT NULL COMMENT '归属配置,空为全局模板',
-  `name`        varchar(100) NOT NULL COMMENT '规则集名',
-  `content`     mediumtext            COMMENT '规则正文',
-  `enabled`     char(1)      NOT NULL DEFAULT '0',
-  `sort`        int(11)      NOT NULL DEFAULT 0,
-  `create_by`   bigint(20)            DEFAULT NULL,
-  `create_time` datetime              DEFAULT NULL,
-  `update_by`   bigint(20)            DEFAULT NULL,
-  `update_time` datetime              DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  KEY `idx_operator_ruleset_profile` (`profile_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='破甲规则集';
-
--- ------------------------------------------------------------
--- 3. 审计（对应 applied.json / override-state.json）
+-- 2. 审计（对应 applied.json / override-state.json）
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `operator_audit` (
   `id`             bigint(20)  NOT NULL,
@@ -98,7 +79,9 @@ CREATE TABLE IF NOT EXISTS `operator_audit` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='破甲审计';
 
 -- ------------------------------------------------------------
--- 4. 拒绝统计（用于判断哪套注入在哪个模型上失效）
+-- 3. 拒绝统计（用于判断哪套注入在哪个模型上失效）
+--    total=首轮请求数 / refused=拒绝轮次 / retry_ok=重试后放行数，
+--    由 RefusalGuard 与 OperatorRefusalGate 运行期写入，/system/operator/status 读取。
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `operator_refusal_stat` (
   `id`         bigint(20)  NOT NULL,
@@ -115,14 +98,16 @@ CREATE TABLE IF NOT EXISTS `operator_refusal_stat` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='破甲拒绝统计';
 
 -- ------------------------------------------------------------
--- 5. 会话快照：让破甲态可复现，且不影响历史会话
---    （与 chat_session.prompt_snapshot / prompt_version 同一设计哲学）
+-- 4. 清理：早期版本曾建 operator_ruleset 死表、chat_session 死列
+--    （建了但无任何代码读写），这里幂等清除；新环境直接跳过。
 -- ------------------------------------------------------------
+DROP TABLE IF EXISTS `operator_ruleset`;
+
 SET @ddl = (SELECT IF(
   (SELECT COUNT(*) FROM `information_schema`.`COLUMNS`
     WHERE `TABLE_SCHEMA` = DATABASE() AND `TABLE_NAME` = 'chat_session'
-      AND `COLUMN_NAME` = 'operator_profile_id') = 0,
-  'ALTER TABLE `chat_session` ADD COLUMN `operator_profile_id` bigint(20) DEFAULT NULL COMMENT ''破甲配置ID''',
+      AND `COLUMN_NAME` = 'operator_profile_id') > 0,
+  'ALTER TABLE `chat_session` DROP COLUMN `operator_profile_id`',
   'SELECT 1'));
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;
@@ -131,15 +116,15 @@ DEALLOCATE PREPARE stmt;
 SET @ddl = (SELECT IF(
   (SELECT COUNT(*) FROM `information_schema`.`COLUMNS`
     WHERE `TABLE_SCHEMA` = DATABASE() AND `TABLE_NAME` = 'chat_session'
-      AND `COLUMN_NAME` = 'operator_inject_hash') = 0,
-  'ALTER TABLE `chat_session` ADD COLUMN `operator_inject_hash` char(64) DEFAULT NULL COMMENT ''会话创建时的注入指纹''',
+      AND `COLUMN_NAME` = 'operator_inject_hash') > 0,
+  'ALTER TABLE `chat_session` DROP COLUMN `operator_inject_hash`',
   'SELECT 1'));
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
 -- ------------------------------------------------------------
--- 6. 管理端菜单与权限位（挂在「对话管理」下，父菜单需已存在）
+-- 5. 管理端菜单与权限位（挂在「对话管理」下，父菜单需已存在）
 -- ------------------------------------------------------------
 INSERT IGNORE INTO `sys_menu` VALUES
 (2099010100000000100, '破甲配置', 2000209300188356609, 9, 'operator', 'system/operator/index', NULL, 1, 0, 'C', '0', '0', 'system:operator:query', 'ant-design:thunderbolt-outlined', 103, 1, '2026-11-02 00:00:00', NULL, NULL, '破甲运行态配置与状态'),

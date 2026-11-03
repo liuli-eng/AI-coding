@@ -37,9 +37,16 @@ public class RefusalGuard {
         "step 1", "第1步", "第一步", "```java", "```python", "```sql");
 
     private final OperatorPromptOverlay overlay;
+    private final OperatorRefusalStatService stats;
 
-    public RefusalGuard(OperatorPromptOverlay overlay) {
+    public RefusalGuard(OperatorPromptOverlay overlay, OperatorRefusalStatService stats) {
         this.overlay = overlay;
+        this.stats = stats;
+    }
+
+    /** 供闸门上报首轮总数/重试成功数（重试轮的成功在闸门里才能观测到）。 */
+    OperatorRefusalStatService stats() {
+        return stats;
     }
 
     public boolean enabled() {
@@ -128,7 +135,13 @@ public class RefusalGuard {
                                         String requestText) {
         boolean refusal = looksLikeRefusal(text);
         if (!refusal) {
+            if (attempt > 0 && stats != null) {
+                stats.recordRetrySuccess(scene, model);
+            }
             return false;
+        }
+        if (stats != null) {
+            stats.recordRefusal(scene, model);
         }
         int max = retryMax();
         RefusalClass refusalClass = classify(text, requestText);

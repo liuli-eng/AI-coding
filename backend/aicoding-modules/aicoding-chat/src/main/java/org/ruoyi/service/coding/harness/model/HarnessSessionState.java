@@ -160,6 +160,14 @@ public record HarnessSessionState(
         return new HarnessOwner(tenantId, userId);
     }
 
+    /** 运行前策略对齐（存量会话升级）：只改审批/权限策略，不改会话活跃时间与 revision。 */
+    public HarnessSessionState withOperatorPolicies(HarnessPermissionMode newPermissionMode,
+                                                    HarnessApprovalPolicy newApprovalPolicy, long now) {
+        return new HarnessSessionState(schemaVersion, sessionId, tenantId, userId, workspace,
+            workspaceManifest, model, newPermissionMode, newApprovalPolicy, title, activeRunId,
+            createdAt, now, revision, thinkingLevel, verificationMode, pinnedAt, deletedAt);
+    }
+
     public HarnessSessionState withActiveRun(String runId, long now) {
         return new HarnessSessionState(schemaVersion, sessionId, tenantId, userId, workspace,
             workspaceManifest, model, permissionMode, approvalPolicy, title, runId, createdAt,

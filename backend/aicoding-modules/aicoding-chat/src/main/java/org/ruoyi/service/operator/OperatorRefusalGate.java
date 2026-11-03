@@ -77,31 +77,41 @@ public class OperatorRefusalGate implements StreamingChatResponseHandler {
 
     @Override
     public void onCompleteResponse(ChatResponse completeResponse) {
-        if (!passing) {
-            String text = hold.length() > 0
-                ? hold.toString()
-                : (completeResponse == null ? "" : completeResponse.aiMessage().text());
-            boolean retry = guard != null
-                && guard.recordAndShouldRetry(scene, model, attempt, text, requestText)
-                && attempt < maxAttempts;
-            if (retry) {
-                hold.setLength(0);
-                try {
-                    retryAction.run();
-                } catch (RuntimeException failure) {
-                    // 重试本身失败时不能吞掉用户这一轮：把已扣留内容放行，按正常结束处理。
-                    log.warn("operator_refusal scene={} model={} attempt={} retryFailed={}",
-                        scene, model, attempt, failure.getClass().getSimpleName());
-                    passing = true;
-                    delegate.onCompleteResponse(completeResponse);
-                }
-                return;
+        // 首轮完成即计入分母（长答案走 passing 分支也算，否则拒绝率失真）。
+        if (attempt == 0 && guard != null && guard.stats() != null) {
+            guard.stats().recordTotal(scene, model);
+        }
+        if (passing) {
+            // 重试轮直接超窗放行 = 换框重做成功（recordAndShouldRetry 只覆盖短答案路径）。
+            if (attempt > 0 && guard != null && guard.stats() != null) {
+                guard.stats().recordRetrySuccess(scene, model);
             }
-            passing = true;
-            if (hold.length() > 0) {
-                delegate.onPartialResponse(hold.toString());
-                hold.setLength(0);
+            delegate.onCompleteResponse(completeResponse);
+            return;
+        }
+        String text = hold.length() > 0
+            ? hold.toString()
+            : (completeResponse == null ? "" : completeResponse.aiMessage().text());
+        boolean retry = guard != null
+            && guard.recordAndShouldRetry(scene, model, attempt, text, requestText)
+            && attempt < maxAttempts;
+        if (retry) {
+            hold.setLength(0);
+            try {
+                retryAction.run();
+            } catch (RuntimeException failure) {
+                // 重试本身失败时不能吞掉用户这一轮：把已扣留内容放行，按正常结束处理。
+                log.warn("operator_refusal scene={} model={} attempt={} retryFailed={}",
+                    scene, model, attempt, failure.getClass().getSimpleName());
+                passing = true;
+                delegate.onCompleteResponse(completeResponse);
             }
+            return;
+        }
+        passing = true;
+        if (hold.length() > 0) {
+            delegate.onPartialResponse(hold.toString());
+            hold.setLength(0);
         }
         delegate.onCompleteResponse(completeResponse);
     }
